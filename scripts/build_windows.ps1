@@ -1,17 +1,23 @@
 $ErrorActionPreference = "Stop"
-$python = if (Test-Path ".venv\Scripts\python.exe") {
-    (Resolve-Path ".venv\Scripts\python.exe").Path
-} else {
-    "python"
-}
+$projectRoot = Split-Path -Parent $PSScriptRoot
+$venvPython = Join-Path $projectRoot '.venv\Scripts\python.exe'
+$python = if (Test-Path -LiteralPath $venvPython) { $venvPython } else { 'python' }
 
-& $python -m PyInstaller `
-    --noconfirm `
-    --clean `
-    --onedir `
-    --windowed `
-    --name YYICToolbox `
-    --paths src `
-    --distpath dist `
-    --workpath build `
-    src/yyict_toolbox/__main__.py
+Push-Location $projectRoot
+try {
+    & $python -m PyInstaller `
+        --noconfirm `
+        --clean `
+        --onedir `
+        --windowed `
+        --name YYICToolbox `
+        --paths src `
+        --distpath dist `
+        --workpath build `
+        src/yyict_toolbox/__main__.py
+    if ($LASTEXITCODE -ne 0) {
+        throw "PyInstaller 构建失败（退出码 $LASTEXITCODE）"
+    }
+} finally {
+    Pop-Location
+}

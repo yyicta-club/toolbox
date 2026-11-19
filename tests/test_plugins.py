@@ -7,4 +7,5 @@ def test_builtin_campus_network_plugin_is_registered() -> None:
     assert len(tools) == 1
     assert tools[0].id == "campus-network-login"
     assert tools[0].name == "校园网自动登录"
-    assert tools[0].available is False
+    assert tools[0].available is True
+    assert tools[0].view_factory is not None

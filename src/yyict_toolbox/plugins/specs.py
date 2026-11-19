@@ -1,7 +1,11 @@
+from collections.abc import Callable
 from dataclasses import dataclass
+from typing import TYPE_CHECKING
+
+if TYPE_CHECKING:
+    from PySide6.QtWidgets import QWidget
 
 import pluggy
-
 
 PROJECT_NAME = "yyict_toolbox"
 hookspec = pluggy.HookspecMarker(PROJECT_NAME)
@@ -16,6 +20,7 @@ class ToolDescriptor:
     name: str
     description: str
     available: bool = True
+    view_factory: Callable[[], "QWidget"] | None = None
 
 
 class ToolboxHookSpec:

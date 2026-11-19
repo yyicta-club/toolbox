@@ -1,14 +1,17 @@
 from collections.abc import Sequence
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QTimer, Signal
+from PySide6.QtGui import QAction, QCloseEvent
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QPushButton,
     QSizePolicy,
     QStyle,
+    QSystemTrayIcon,
     QVBoxLayout,
     QWidget,
 )
@@ -17,29 +20,39 @@ from yyict_toolbox.plugins.specs import ToolDescriptor
 
 
 class MainWindow(QMainWindow):
+    exit_requested = Signal()
+
     def __init__(self, tools: Sequence[ToolDescriptor]) -> None:
         super().__init__()
         self._tools = list(tools)
         self._tool_buttons: dict[str, QPushButton] = {}
+        self._pages: dict[str, QWidget] = {}
+        self._exit_requested = False
+        self._shutdown_timer = QTimer(self)
+        self._shutdown_timer.setInterval(100)
+        self._shutdown_timer.timeout.connect(self._complete_exit)
         self.setWindowTitle("校园工具箱")
-        self.setMinimumSize(760, 520)
-        self.resize(960, 640)
+        self.setMinimumSize(780, 620)
+        self.resize(980, 760)
         self.setStyleSheet(
             """
             QMainWindow, QWidget#root { background: #f5f7f8; color: #17212b; }
             QWidget#sidebar { background: #ffffff; border-right: 1px solid #e2e8ec; }
             QLabel#brand { color: #173b4d; font-size: 17px; font-weight: 700; }
             QLabel#eyebrow { color: #60717d; font-size: 11px; font-weight: 700; }
-            QLabel#pageTitle { color: #17212b; font-size: 23px; font-weight: 700; }
             QLabel#muted { color: #667783; font-size: 13px; }
-            QLabel#state { color: #8a4b12; background: #fff2df; border: 1px solid #f1d3aa;
-                           border-radius: 4px; padding: 5px 9px; font-weight: 600; }
             QPushButton#toolButton { text-align: left; padding: 10px 12px; border: 0;
                                      border-radius: 5px; color: #40515d; font-size: 13px; }
             QPushButton#toolButton:hover { background: #f0f5f7; }
             QPushButton#toolButton:checked { background: #e6f2f2; color: #12615e;
                                              font-weight: 600; }
             QFrame#separator { background: #e2e8ec; border: 0; max-height: 1px; }
+            QLineEdit, QComboBox, QSpinBox { min-height: 30px; padding: 2px 8px;
+                                             border: 1px solid #d6dfe4; border-radius: 4px;
+                                             background: #ffffff; }
+            QPushButton { min-height: 32px; padding: 2px 12px; }
+            QPlainTextEdit { background: #ffffff; border: 1px solid #e2e8ec;
+                             border-radius: 4px; color: #263640; }
             """
         )
 
@@ -50,9 +63,36 @@ class MainWindow(QMainWindow):
         layout.addWidget(self._build_sidebar())
         layout.addWidget(self._build_content(), 1)
         self.setCentralWidget(root)
+        self._setup_tray_icon()
 
         if self._tools:
             self._select_tool(self._tools[0].id)
+
+    @property
+    def tray_available(self) -> bool:
+        return QSystemTrayIcon.isSystemTrayAvailable()
+
+    def shutdown(self) -> bool:
+        stopped = True
+        for page in self._pages.values():
+            shutdown = getattr(page, "shutdown", None)
+            if shutdown:
+                stopped = shutdown() and stopped
+        return stopped
+
+    def wait_for_shutdown(self) -> None:
+        for page in self._pages.values():
+            wait = getattr(page, "wait_for_shutdown", None)
+            if wait:
+                wait()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        if self.tray_available and not self._exit_requested:
+            self.hide()
+            event.ignore()
+            return
+        event.ignore()
+        self._exit_application()
 
     def _build_sidebar(self) -> QWidget:
         sidebar = QWidget(objectName="sidebar")
@@ -61,8 +101,7 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(18, 20, 14, 16)
         layout.setSpacing(8)
 
-        brand = QLabel("校园工具箱", objectName="brand")
-        layout.addWidget(brand)
+        layout.addWidget(QLabel("校园工具箱", objectName="brand"))
         layout.addSpacing(22)
         layout.addWidget(QLabel("工具", objectName="eyebrow"))
         layout.addSpacing(5)
@@ -77,52 +116,53 @@ class MainWindow(QMainWindow):
             self._tool_buttons[tool.id] = button
 
         layout.addStretch(1)
+        background_button = QPushButton("后台运行")
+        background_button.setEnabled(self.tray_available)
+        background_button.setToolTip("隐藏到系统托盘继续运行；从托盘菜单退出")
+        background_button.clicked.connect(self.hide)
+        layout.addWidget(background_button)
+        exit_button = QPushButton("退出工具箱")
+        exit_button.clicked.connect(self._exit_application)
+        layout.addWidget(exit_button)
         layout.addWidget(QLabel("YYICT TOOLBOX  ·  0.1.0", objectName="muted"))
         return sidebar
 
     def _build_content(self) -> QWidget:
         content = QWidget()
         layout = QVBoxLayout(content)
-        layout.setContentsMargins(34, 28, 34, 28)
+        layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(0)
-
-        top = QHBoxLayout()
-        section = QLabel("工具箱  /  功能")
-        section.setObjectName("muted")
-        top.addWidget(section)
-        top.addStretch(1)
-        self._state_label = QLabel("尚未实现", objectName="state")
-        top.addWidget(self._state_label)
-        layout.addLayout(top)
-        layout.addSpacing(28)
-
-        heading = QHBoxLayout()
-        icon = QLabel()
-        icon.setFixedSize(42, 42)
-        icon.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        icon.setStyleSheet("background:#e6f2f2; border-radius:6px; color:#12615e;")
-        icon.setPixmap(self.style().standardIcon(QStyle.StandardPixmap.SP_DriveNetIcon).pixmap(22, 22))
-        heading.addWidget(icon)
-        heading.addSpacing(14)
-        title_group = QVBoxLayout()
-        self._title_label = QLabel("校园网自动登录", objectName="pageTitle")
-        self._description_label = QLabel("校园网络连接工具", objectName="muted")
-        title_group.addWidget(self._title_label)
-        title_group.addWidget(self._description_label)
-        heading.addLayout(title_group)
-        heading.addStretch(1)
-        layout.addLayout(heading)
-        layout.addSpacing(24)
-
+        self._page_layout = QVBoxLayout()
+        self._page_layout.setContentsMargins(0, 0, 0, 0)
+        header = QWidget()
+        header_layout = QHBoxLayout(header)
+        header_layout.setContentsMargins(34, 22, 34, 18)
+        header_layout.addWidget(QLabel("工具箱  /  功能", objectName="muted"))
+        layout.addWidget(header)
         separator = QFrame(objectName="separator")
         separator.setFrameShape(QFrame.Shape.HLine)
         layout.addWidget(separator)
-        layout.addSpacing(24)
-
-        self._empty_label = QLabel("该工具尚未实现", objectName="muted")
-        layout.addWidget(self._empty_label)
-        layout.addStretch(1)
+        page_host = QWidget()
+        page_host.setLayout(self._page_layout)
+        layout.addWidget(page_host, 1)
         return content
+
+    def _setup_tray_icon(self) -> None:
+        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        self._tray_icon = QSystemTrayIcon(icon, self)
+        self._tray_icon.setToolTip("校园工具箱")
+        menu = QMenu(self)
+        show_action = QAction("打开主界面", self)
+        exit_action = QAction("退出", self)
+        show_action.triggered.connect(self._show_window)
+        exit_action.triggered.connect(self._exit_application)
+        menu.addAction(show_action)
+        menu.addSeparator()
+        menu.addAction(exit_action)
+        self._tray_icon.setContextMenu(menu)
+        self._tray_icon.activated.connect(self._tray_activated)
+        if self.tray_available:
+            self._tray_icon.show()
 
     def _select_tool(self, tool_id: str) -> None:
         tool = next((item for item in self._tools if item.id == tool_id), None)
@@ -130,10 +170,41 @@ class MainWindow(QMainWindow):
             return
         for current_id, button in self._tool_buttons.items():
             button.setChecked(current_id == tool_id)
-        self._title_label.setText(tool.name)
-        self._description_label.setText(tool.description)
-        self._state_label.setText("可用" if tool.available else "尚未实现")
-        self._state_label.setStyleSheet(
-            "" if not tool.available else "color:#176247; background:#e5f4ed; border-color:#b8dfca;"
-        )
-        self._empty_label.setText("" if tool.available else "该工具尚未实现")
+
+        current = self._page_layout.itemAt(0)
+        if current:
+            old_page = current.widget()
+            self._page_layout.removeWidget(old_page)
+            old_page.hide()
+
+        page = self._pages.get(tool_id)
+        if page is None:
+            page = tool.view_factory() if tool.view_factory else QLabel("该工具尚未实现")
+            self._pages[tool_id] = page
+        self._page_layout.addWidget(page)
+        page.show()
+
+    def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
+        if reason in (
+            QSystemTrayIcon.ActivationReason.Trigger,
+            QSystemTrayIcon.ActivationReason.DoubleClick,
+        ):
+            self._show_window()
+
+    def _show_window(self) -> None:
+        self.show()
+        self.raise_()
+        self.activateWindow()
+
+    def _exit_application(self) -> None:
+        self._exit_requested = True
+        self.centralWidget().setEnabled(False)
+        self._shutdown_timer.start()
+        self._complete_exit()
+
+    def _complete_exit(self) -> None:
+        if self.shutdown():
+            self._shutdown_timer.stop()
+            self._tray_icon.hide()
+            self.hide()
+            self.exit_requested.emit()

@@ -1,6 +1,10 @@
+import logging
+from queue import Queue
+
 import pluggy
 
 from yyict_toolbox.plugins.builtin.campus_network import CampusNetworkPlugin
+from yyict_toolbox.plugins.builtin.campus_settings import CampusSettingsStore
 from yyict_toolbox.plugins.specs import PROJECT_NAME, ToolboxHookSpec, ToolDescriptor
 
 
@@ -17,7 +21,17 @@ class PluginManager:
         return [tool for plugin_tools in results for tool in plugin_tools]
 
 
-def create_plugin_manager() -> PluginManager:
+def create_plugin_manager(
+    settings_store: CampusSettingsStore | None = None,
+    log_queue: Queue[logging.LogRecord] | None = None,
+    logger: logging.Logger | None = None,
+) -> PluginManager:
     manager = PluginManager()
-    manager.register(CampusNetworkPlugin())
+    manager.register(
+        CampusNetworkPlugin(
+            settings_store or CampusSettingsStore(),
+            log_queue or Queue(),
+            logger or logging.getLogger("yyict_toolbox"),
+        )
+    )
     return manager
