@@ -1,8 +1,10 @@
 from collections.abc import Sequence
+from pathlib import Path
 
-from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
+    QDialog,
     QFrame,
     QHBoxLayout,
     QLabel,
@@ -133,6 +135,21 @@ class MainWindow(QMainWindow):
             self._tool_buttons[tool.id] = button
 
         layout.addStretch(1)
+        self._image_pixmap = QPixmap(
+            str(Path(__file__).resolve().parent.parent / "resources" / "images" / "xiehuiqq.png")
+        )
+        join_button = QPushButton()
+        if not self._image_pixmap.isNull():
+            join_button.setIcon(QIcon(self._image_pixmap))
+            join_button.setIconSize(QSize(200, 200))
+        join_button.setFixedSize(200, 200)
+        join_button.setToolTip("点击查看大图")
+        join_button.setStyleSheet(
+            "QPushButton { border: none; border-radius: 8px; }"
+            "QPushButton:hover { background: #f0f5f7; }"
+        )
+        join_button.clicked.connect(self._show_enlarged_image)
+        layout.addWidget(join_button)
         background_button = QPushButton("后台运行")
         background_button.setEnabled(self.tray_available)
         background_button.setToolTip("隐藏到系统托盘继续运行；从托盘菜单退出")
@@ -180,6 +197,27 @@ class MainWindow(QMainWindow):
         self._tray_icon.activated.connect(self._tray_activated)
         if self.tray_available:
             self._tray_icon.show()
+
+    def _show_enlarged_image(self) -> None:
+        if self._image_pixmap.isNull():
+            return
+        dialog = QDialog(self)
+        dialog.setWindowTitle("查看图片")
+        screen = dialog.screen().availableGeometry()
+        max_w, max_h = screen.width() * 3 // 4, screen.height() * 3 // 4
+        scaled = self._image_pixmap.scaled(
+            max_w, max_h,
+            Qt.AspectRatioMode.KeepAspectRatio,
+            Qt.TransformationMode.SmoothTransformation,
+        )
+        label = QLabel()
+        label.setPixmap(scaled)
+        label.setScaledContents(False)
+        layout = QVBoxLayout(dialog)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.addWidget(label)
+        dialog.adjustSize()
+        dialog.exec()
 
     def _select_tool(self, tool_id: str) -> None:
         tool = next((item for item in self._tools if item.id == tool_id), None)
