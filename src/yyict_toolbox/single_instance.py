@@ -31,10 +31,11 @@ class SingleInstanceGuard:
         self._lock_file: IO[str] | None = None
 
     def acquire(self) -> bool:
-        """尝试获取单实例锁；返回 False 表示已有其他实例持有锁。"""
-        self._lock_path.parent.mkdir(parents=True, exist_ok=True)
-        lock_file = open(self._lock_path, "a")
+        """尝试获取单实例锁；返回 False 表示已有实例持锁或锁文件不可用。"""
+        lock_file: IO[str] | None = None
         try:
+            self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+            lock_file = open(self._lock_path, "a")
             # Windows 的字节锁从当前文件位置算起，必须归零以保证各实例锁同一区域。
             lock_file.seek(0)
             if sys.platform == "win32":
@@ -42,7 +43,8 @@ class SingleInstanceGuard:
             else:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
         except OSError:
-            lock_file.close()
+            if lock_file is not None:
+                lock_file.close()
             return False
         self._lock_file = lock_file
         return True

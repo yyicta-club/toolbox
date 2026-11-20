@@ -29,6 +29,22 @@ def test_acquire_creates_lock_file_in_new_directory(tmp_path: Path) -> None:
     guard.release()
 
 
+def test_acquire_returns_false_when_lock_path_is_directory(tmp_path: Path) -> None:
+    lock_path = tmp_path / ".toolbox.lock"
+    lock_path.mkdir()
+    guard = SingleInstanceGuard(lock_path)
+    assert guard.acquire() is False
+    guard.release()
+
+
+def test_acquire_returns_false_when_parent_path_is_file(tmp_path: Path) -> None:
+    blocked_parent = tmp_path / "yyict-toolbox"
+    blocked_parent.write_text("占用", encoding="utf-8")
+    guard = SingleInstanceGuard(blocked_parent / ".toolbox.lock")
+    assert guard.acquire() is False
+    guard.release()
+
+
 def test_default_lock_path_is_per_user_and_app_scoped() -> None:
     lock_path = default_lock_path()
     assert lock_path.name == ".toolbox.lock"
