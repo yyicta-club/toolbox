@@ -6,8 +6,9 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication, QLabel, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSystemTrayIcon
 
+from yyict_toolbox import __version__
 from yyict_toolbox.plugins.builtin.campus_settings import (
     CampusSettings,
     CampusSettingsStore,
@@ -202,3 +203,25 @@ def test_text_tip_lifecycle_is_configurable(window, app):
     assert persistent.isVisible()
     assert not window._tip_timer.isActive()
     assert persistent is tip
+
+
+def test_version_button_shows_package_version(window):
+    button = window.findChild(QPushButton, 'versionButton')
+    assert button is not None
+    assert __version__ in button.text()
+
+
+def test_update_check_in_source_mode_explains_limit(window, monkeypatch):
+    import yyict_toolbox.ui.main_window as main_window
+
+    monkeypatch.setattr(main_window, 'is_frozen_install', lambda: False)
+    window._check_updates()
+    assert window._tip_label is not None
+    assert '源码模式' in window._tip_label.text()
+    assert window._update_worker is None
+
+
+def test_report_update_result_shows_applied_version(window):
+    window.report_update_result(('applied', '0.2.0'))
+    assert window._tip_label is not None
+    assert '0.2.0' in window._tip_label.text()

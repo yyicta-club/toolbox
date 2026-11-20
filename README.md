@@ -113,6 +113,46 @@ python -m pytest tests/test_ui.py
 
 Qt 依赖固定为已验证打包启动的 `PySide6_Essentials==6.9.3`。如果旧环境装过其他版本的 PySide6 完整包，请使用新的虚拟环境安装项目依赖，避免 Qt 多个分发包混装；分发应用时需保留整个 `YYICToolbox` 目录，不能只复制 exe。
 
+### 便携版（单文件）
+
+```powershell
+.\scripts\build_windows_onefile.ps1
+```
+
+输出 `dist\YYICToolbox-<版本>-portable.exe`，复制这一个文件即可运行；可以和其他发布物一起上传到 Release。单文件版每次启动都要把依赖解压到临时目录，启动速度比目录版慢，部分杀毒软件也更容易误报。配置仍保存在注册表、密码仍保存在 Windows 凭据库，所以“便携”只指程序文件本身；换机器使用时账号需要重新填写。
+
+便携版的「检查更新」只提示新版本并打开下载页，需要手动下载同名 exe 替换；自动下载与替换仅支持目录版。
+
+## 软件内更新
+
+打包版本的主界面侧栏显示当前版本号，点击即可检查更新：从发布源读取清单、下载整包、校验 SHA-256，确认后退出程序，由后台脚本替换程序目录并自动重启；替换失败会回滚到原版本，结果写入更新目录并在下次启动时提示。源码运行只提示不支持自动更新，不下载安装包。
+
+模块划分、时序和失败回滚策略见 [docs/UPDATE_ARCHITECTURE.md](docs/UPDATE_ARCHITECTURE.md)。
+
+更新检查依次尝试 `src/yyict_toolbox/updates.py` 中的发布源：默认是自建 Gitea 仓库的 `releases/latest` API；创建 GitHub 备用仓库后，把 `GITHUB_REPOSITORY` 填成 `"owner/repo"` 即自动启用兜底。应用目录必须可写（与日志要求一致），更新不需要管理员权限。
+
+发布新版本：
+
+```powershell
+# 先修改 src/yyict_toolbox/__init__.py 与 pyproject.toml 中的版本号
+.\scripts\build_release.ps1 -Notes "本次更新说明" -MinSupported "0.1.0"
+```
+
+脚本打包 onedir、生成 `dist\YYICToolbox-<版本>-win64.zip` 与 `dist\manifest.json`。在 Gitea（或 GitHub）创建以版本号命名的 Release，同时上传 `manifest.json` 和 zip 两个附件，清单内 `package.name` 必须与 zip 文件名一致。`min_supported` 表示低于该版本的客户端应强制更新，没有特殊要求时传当前版本即可。`manifest.json` 形如：
+
+```json
+{
+  "version": "0.2.0",
+  "notes": "修复探针相关问题",
+  "min_supported": "0.1.0",
+  "package": {
+    "name": "YYICToolbox-0.2.0-win64.zip",
+    "sha256": "<64 位十六进制>",
+    "size": 123456789
+  }
+}
+```
+
 ## 插件结构
 
 插件通过 `plugins/specs.py` 定义的 pluggy Hook 提供工具元数据和页面工厂。只注册随应用分发的内置插件，不扫描外部插件目录。
