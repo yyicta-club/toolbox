@@ -307,6 +307,7 @@ class MainWindow(QMainWindow):
         dialog.setWindowTitle("查看图片")
         screen = dialog.screen().availableGeometry()
         max_w, max_h = screen.width() * 3 // 4, screen.height() * 3 // 4
+        self._image_pixmap = QPixmap(str(image_path("qq.jpg")))
         scaled = self._image_pixmap.scaled(
             max_w, max_h,
             Qt.AspectRatioMode.KeepAspectRatio,
@@ -320,6 +321,7 @@ class MainWindow(QMainWindow):
         layout.addWidget(label)
         dialog.adjustSize()
         dialog.exec()
+        self._image_pixmap = QPixmap(str(image_path("xiehuiqq.png")))
 
     def _select_tool(self, tool_id: str) -> None:
         tool = next((item for item in self._tools if item.id == tool_id), None)
