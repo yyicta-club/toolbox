@@ -5,7 +5,7 @@ from queue import Queue
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
-from PySide6.QtCore import QSettings, QUrl
+from PySide6.QtCore import QSettings, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSystemTrayIcon
 
@@ -267,3 +267,31 @@ def test_report_update_result_shows_applied_version(window):
     window.report_update_result(('applied', '0.2.0'))
     assert window._tip_label is not None
     assert '0.2.0' in window._tip_label.text()
+
+
+def _close_modal_dialog(titles):
+    modal = QApplication.activeModalWidget()
+    if modal is not None:
+        titles.append(modal.windowTitle())
+        modal.close()
+
+
+def test_update_available_shows_version_dialog(window):
+    from yyict_toolbox.updates import ReleaseManifest, ReleaseSource, UpdateCandidate
+
+    candidate = UpdateCandidate(
+        ReleaseSource('test', 'http://example.invalid'),
+        ReleaseManifest('0.2.0', '测试说明', '0.0.0', 'app.zip', '0' * 64, 1),
+        'http://example.invalid/app.zip',
+    )
+    titles = []
+    QTimer.singleShot(50, lambda: _close_modal_dialog(titles))
+    window._on_update_resolved(candidate)
+    assert titles == ['发现新版本']
+
+
+def test_failed_update_result_warns(window):
+    titles = []
+    QTimer.singleShot(50, lambda: _close_modal_dialog(titles))
+    window.report_update_result(('failed', '0.2.0'))
+    assert titles == ['更新未完成']
