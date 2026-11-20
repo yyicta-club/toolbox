@@ -12,6 +12,7 @@ try {
         --windowed `
         --name YYICToolbox `
         --paths src `
+        --add-data "src/yyict_toolbox/resources/logo.png;resources" `
         --distpath dist `
         --workpath build `
         src/yyict_toolbox/__main__.py

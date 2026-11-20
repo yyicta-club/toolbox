@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 
-from PySide6.QtCore import QTimer, Signal
-from PySide6.QtGui import QAction, QCloseEvent
+from PySide6.QtCore import Qt, QTimer, Signal
+from PySide6.QtGui import QAction, QCloseEvent, QIcon, QPixmap
 from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
@@ -17,6 +17,7 @@ from PySide6.QtWidgets import (
 )
 
 from yyict_toolbox.plugins.specs import ToolDescriptor
+from yyict_toolbox.resources import logo_path
 
 
 class MainWindow(QMainWindow):
@@ -32,6 +33,7 @@ class MainWindow(QMainWindow):
         self._shutdown_timer.setInterval(100)
         self._shutdown_timer.timeout.connect(self._complete_exit)
         self.setWindowTitle("校园工具箱")
+        self.setWindowIcon(QIcon(str(logo_path())))
         self.setMinimumSize(780, 620)
         self.resize(980, 760)
         self.setStyleSheet(
@@ -101,7 +103,22 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(18, 20, 14, 16)
         layout.setSpacing(8)
 
-        layout.addWidget(QLabel("校园工具箱", objectName="brand"))
+        brand_row = QHBoxLayout()
+        brand_row.setSpacing(10)
+        logo_label = QLabel(objectName="brandLogo")
+        logo_pixmap = QPixmap(str(logo_path()))
+        logo_label.setPixmap(
+            logo_pixmap.scaled(
+                36,
+                36,
+                Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            )
+        )
+        brand_row.addWidget(logo_label)
+        brand_row.addWidget(QLabel("校园工具箱", objectName="brand"))
+        brand_row.addStretch(1)
+        layout.addLayout(brand_row)
         layout.addSpacing(22)
         layout.addWidget(QLabel("工具", objectName="eyebrow"))
         layout.addSpacing(5)
@@ -148,7 +165,7 @@ class MainWindow(QMainWindow):
         return content
 
     def _setup_tray_icon(self) -> None:
-        icon = self.style().standardIcon(QStyle.StandardPixmap.SP_ComputerIcon)
+        icon = QIcon(str(logo_path()))
         self._tray_icon = QSystemTrayIcon(icon, self)
         self._tray_icon.setToolTip("校园工具箱")
         menu = QMenu(self)

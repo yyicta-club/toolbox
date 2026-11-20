@@ -2,12 +2,13 @@ import logging
 import sys
 from pathlib import Path
 
-from PySide6.QtGui import QFont
+from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
 from yyict_toolbox.logging_system import configure_logging
 from yyict_toolbox.plugins.builtin.campus_settings import CampusSettingsStore
 from yyict_toolbox.plugins.manager import create_plugin_manager
+from yyict_toolbox.resources import logo_path
 from yyict_toolbox.ui.main_window import MainWindow
 
 
@@ -21,6 +22,7 @@ def main() -> int:
     app = QApplication(sys.argv)
     app.setApplicationName("校园工具箱")
     app.setOrganizationName("YYICT")
+    app.setWindowIcon(QIcon(str(logo_path())))
     app.setFont(QFont("Microsoft YaHei UI", 10))
 
     try:

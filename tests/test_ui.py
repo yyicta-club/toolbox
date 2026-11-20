@@ -6,7 +6,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
 from PySide6.QtCore import QSettings
-from PySide6.QtWidgets import QApplication, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QLabel, QSystemTrayIcon
 
 from yyict_toolbox.plugins.builtin.campus_settings import (
     CampusSettings,
@@ -172,3 +172,12 @@ def test_start_stop_monitor_without_duplicate_threads(window, app, monkeypatch):
     assert page._start_button.isEnabled()
     assert not page._stop_button.isEnabled()
     assert page._account_input.isEnabled()
+
+
+def test_main_window_shows_logo_in_window_tray_and_sidebar(window):
+    assert not window.windowIcon().isNull()
+    logo_label = window.findChild(QLabel, 'brandLogo')
+    assert logo_label is not None
+    pixmap = logo_label.pixmap()
+    assert pixmap is not None and not pixmap.isNull()
+    assert not window._tray_icon.icon().isNull()
