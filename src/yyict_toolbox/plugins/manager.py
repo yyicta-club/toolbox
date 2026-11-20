@@ -5,6 +5,7 @@ import pluggy
 
 from yyict_toolbox.plugins.builtin.campus_network import CampusNetworkPlugin
 from yyict_toolbox.plugins.builtin.campus_settings import CampusSettingsStore
+from yyict_toolbox.plugins.builtin.demo_hello import DemoHelloPlugin
 from yyict_toolbox.plugins.specs import PROJECT_NAME, ToolboxHookSpec, ToolDescriptor
 
 
@@ -27,6 +28,8 @@ def create_plugin_manager(
     logger: logging.Logger | None = None,
 ) -> PluginManager:
     manager = PluginManager()
+    # 注册内置插件
+    manager.register(DemoHelloPlugin())
     manager.register(
         CampusNetworkPlugin(
             settings_store or CampusSettingsStore(),
