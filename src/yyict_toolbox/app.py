@@ -9,6 +9,7 @@ from yyict_toolbox.logging_system import configure_logging
 from yyict_toolbox.plugins.builtin.campus_settings import CampusSettingsStore
 from yyict_toolbox.plugins.manager import create_plugin_manager
 from yyict_toolbox.resources import logo_path
+from yyict_toolbox.single_instance import SingleInstanceGuard, default_lock_path
 from yyict_toolbox.ui.main_window import MainWindow
 
 
@@ -25,6 +26,21 @@ def main() -> int:
     app.setWindowIcon(QIcon(str(logo_path())))
     app.setFont(QFont("Microsoft YaHei UI", 10))
 
+    guard = SingleInstanceGuard(default_lock_path())
+    if not guard.acquire():
+        QMessageBox.warning(
+            None,
+            "重复启动",
+            "校园工具箱已在运行中，请勿重复启动。\n如未看到主窗口，请检查系统托盘。",
+        )
+        return 1
+    try:
+        return _run_application(app)
+    finally:
+        guard.release()
+
+
+def _run_application(app: QApplication) -> int:
     try:
         log_queue = configure_logging(application_directory())
     except OSError:
