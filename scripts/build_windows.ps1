@@ -16,6 +16,7 @@ try {
         --add-data "src/yyict_toolbox/resources/images/xiehuiqq.png;resources/images" `
         --distpath dist `
         --workpath build `
+        --onefile `
         src/yyict_toolbox/__main__.py
     if ($LASTEXITCODE -ne 0) {
         throw "PyInstaller build failed (exit code $LASTEXITCODE)"
