@@ -3,7 +3,7 @@ from collections import deque
 from queue import Empty, Queue
 
 from PySide6.QtCore import QTimer
-from PySide6.QtGui import QTextCursor
+from PySide6.QtGui import QCloseEvent, QTextCursor
 from PySide6.QtWidgets import (
     QComboBox,
     QFormLayout,
@@ -18,6 +18,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from yyict_toolbox.logging_system import LogEvent, LogEventHub
 from yyict_toolbox.plugins.builtin.campus_network_service import CampusNetworkMonitor
 from yyict_toolbox.plugins.builtin.campus_settings import (
     CampusSettings,
@@ -32,11 +33,16 @@ class CampusNetworkPage(QWidget):
         settings_store: CampusSettingsStore,
         log_queue: Queue[logging.LogRecord],
         logger: logging.Logger,
+        events: LogEventHub | None = None,
     ) -> None:
         super().__init__()
         self._settings_store = settings_store
         self._log_queue = log_queue
         self._logger = logger
+        self._events = events
+        self._subscription: Queue[LogEvent] | None = None
+        if events is not None:
+            self._subscription = events.subscribe()
         self._monitor: CampusNetworkMonitor | None = None
         self._log_entries: deque[tuple[int, str]] = deque(maxlen=1000)
 
@@ -122,12 +128,22 @@ class CampusNetworkPage(QWidget):
             self._status_label.setText("正在停止，请等待当前网络请求结束")
             return False
         self._queue_timer.stop()
+        self._stop_subscription()
         return True
 
     def wait_for_shutdown(self) -> None:
         if self._monitor:
             self._monitor.stop()
             self._monitor.wait()
+
+    def closeEvent(self, event: QCloseEvent) -> None:
+        self._stop_subscription()
+        super().closeEvent(event)
+
+    def _stop_subscription(self) -> None:
+        if self._subscription is not None and self._events is not None:
+            self._events.unsubscribe(self._subscription)
+            self._subscription = None
 
     def _load_settings(self) -> None:
         try:
@@ -205,16 +221,31 @@ class CampusNetworkPage(QWidget):
             widget.setEnabled(enabled)
 
     def _drain_log_queue(self) -> None:
+        """取出统一日志流中的新事件；未接入事件中心时回退到原始记录队列。"""
         changed = False
-        while True:
-            try:
-                record = self._log_queue.get_nowait()
-            except Empty:
-                break
-            message = record.getMessage()
-            timestamp = logging.Formatter("%(asctime)s").formatTime(record, "%H:%M:%S")
-            self._log_entries.append((record.levelno, f"{timestamp} {record.levelname} {message}"))
-            changed = True
+        if self._subscription is not None:
+            while True:
+                try:
+                    event = self._subscription.get_nowait()
+                except Empty:
+                    break
+                timestamp = event.timestamp.strftime("%H:%M:%S")
+                self._log_entries.append(
+                    (event.level, f"{timestamp} {event.level_name} {event.message}")
+                )
+                changed = True
+        else:
+            while True:
+                try:
+                    record = self._log_queue.get_nowait()
+                except Empty:
+                    break
+                message = record.getMessage()
+                timestamp = logging.Formatter("%(asctime)s").formatTime(record, "%H:%M:%S")
+                self._log_entries.append(
+                    (record.levelno, f"{timestamp} {record.levelname} {message}")
+                )
+                changed = True
         if changed:
             self._refresh_log_view()
 

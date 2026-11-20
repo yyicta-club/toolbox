@@ -1,3 +1,4 @@
+import logging
 import os
 from collections.abc import Sequence
 
@@ -28,20 +29,26 @@ from PySide6.QtWidgets import (
 )
 
 from yyict_toolbox import __version__
+from yyict_toolbox.logging_system import SYSTEM_LOGGER_NAME, UPDATE_LOGGER_NAME
 from yyict_toolbox.plugins.specs import ToolDescriptor
 from yyict_toolbox.resources import image_path, logo_path
-from yyict_toolbox.ui.update_worker import UpdateCheckWorker, UpdateDownloadWorker
+from yyict_toolbox.ui.update_worker import (
+    UpdateCheckWorker,
+    UpdateDownloadWorker,
+    UpdateInstallWorker,
+)
 from yyict_toolbox.updates import (
+    APPLY_LOG_NAME,
+    INSTALL_CONFIRM_TIMEOUT,
+    InstallHandshake,
     InstallPlan,
     UpdateCandidate,
     UpdateError,
-    install_directory,
     is_frozen_install,
     is_portable_install,
-    launch_apply_script,
+    launch_update_install,
     release_page_url,
     updates_root,
-    write_apply_script,
 )
 
 
@@ -54,8 +61,11 @@ class MainWindow(QMainWindow):
         self._tool_buttons: dict[str, QPushButton] = {}
         self._pages: dict[str, QWidget] = {}
         self._exit_requested = False
+        self._logger = logging.getLogger(SYSTEM_LOGGER_NAME)
+        self._update_logger = logging.getLogger(UPDATE_LOGGER_NAME)
         self._update_worker: UpdateCheckWorker | None = None
         self._download_worker: UpdateDownloadWorker | None = None
+        self._install_worker: UpdateInstallWorker | None = None
         self._progress_dialog: QProgressDialog | None = None
         self._shutdown_timer = QTimer(self)
         self._shutdown_timer.setInterval(100)
@@ -116,6 +126,10 @@ class MainWindow(QMainWindow):
         if check is not None:
             check.wait(2000)
             self._update_worker = None
+        install = self._install_worker
+        if install is not None:
+            # 启动确认线程按超时自行结束，等待它自然完成而不是强杀。
+            install.wait(int(INSTALL_CONFIRM_TIMEOUT * 1000) + 2000)
         stopped = True
         for page in self._pages.values():
             shutdown = getattr(page, "shutdown", None)
@@ -124,6 +138,9 @@ class MainWindow(QMainWindow):
         return stopped
 
     def wait_for_shutdown(self) -> None:
+        install = self._install_worker
+        if install is not None:
+            install.wait(int(INSTALL_CONFIRM_TIMEOUT * 1000) + 2000)
         for page in self._pages.values():
             wait = getattr(page, "wait_for_shutdown", None)
             if wait:
@@ -342,6 +359,7 @@ class MainWindow(QMainWindow):
             self._pages[tool_id] = page
         self._page_layout.addWidget(page)
         page.show()
+        self._logger.info("切换到工具：%s", tool.name)
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (
@@ -366,9 +384,14 @@ class MainWindow(QMainWindow):
         QMessageBox.warning(self, "更新未完成", "自动更新失败，已恢复原版本。详情见日志。")
 
     def _check_updates(self) -> None:
-        if self._update_worker is not None or self._download_worker is not None:
+        if (
+            self._update_worker is not None
+            or self._download_worker is not None
+            or self._install_worker is not None
+        ):
             return
         if not is_frozen_install():
+            self._update_logger.info("更新检查跳过：源码模式不支持自动更新")
             self._show_text_tip("源码模式不执行自动更新，请使用打包版本", 3000)
             return
         self._update_button.setEnabled(False)
@@ -416,6 +439,9 @@ class MainWindow(QMainWindow):
         self._start_download(candidate)
 
     def _offer_manual_update(self, candidate: UpdateCandidate) -> None:
+        self._update_logger.info(
+            "便携版更新：仅提供手动下载，版本 %s", candidate.manifest.version
+        )
         dialog = QMessageBox(self)
         dialog.setWindowTitle("便携版更新")
         dialog.setIcon(QMessageBox.Icon.Information)
@@ -473,13 +499,46 @@ class MainWindow(QMainWindow):
         if dialog.clickedButton() is not install_button:
             self._show_text_tip("已下载更新，稍后可再次检查更新安装", 4000)
             return
+        self._start_install(plan)
+
+    def _start_install(self, plan: InstallPlan) -> None:
+        """启动更新脚本并等待启动确认；只有确认后主程序才退出。"""
         try:
-            script = write_apply_script(install_directory(), plan, os.getpid())
-            launch_apply_script(script)
-        except (OSError, UpdateError) as error:
+            launch = launch_update_install(plan, os.getpid())
+        except UpdateError as error:
             QMessageBox.critical(self, "无法安装更新", str(error))
             return
+        worker = UpdateInstallWorker(
+            InstallHandshake(launch.marker, launch.process),
+            launch.log,
+            parent=self,
+        )
+        worker.confirmed.connect(self._on_install_confirmed)
+        worker.failed.connect(self._on_install_failed)
+        worker.finished.connect(self._on_install_worker_finished)
+        self._install_worker = worker
+        self._show_text_tip("正在启动更新脚本，请留意弹出的 PowerShell 窗口", 5000)
+        worker.start()
+
+    def _on_install_confirmed(self) -> None:
+        """收到本次启动标记，说明脚本已经开始执行，可以退出主程序。"""
+        self._update_logger.info("更新脚本已确认开始执行，准备退出主程序")
         self._exit_application()
+
+    def _on_install_failed(self, reason: str) -> None:
+        """启动未确认：保留当前版本继续运行，并说明失败原因。"""
+        self._update_logger.error("更新脚本未确认开始执行：%s", reason)
+        QMessageBox.critical(
+            self,
+            "无法安装更新",
+            f"{reason}\n当前版本将继续运行，详情见更新目录中的 {APPLY_LOG_NAME}。",
+        )
+
+    def _on_install_worker_finished(self) -> None:
+        worker = self._install_worker
+        self._install_worker = None
+        if worker is not None:
+            worker.deleteLater()
 
     def _on_update_failed(self, message: str) -> None:
         self._close_progress_dialog()

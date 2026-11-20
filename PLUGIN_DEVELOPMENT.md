@@ -106,24 +106,19 @@ class MyPage(QWidget):
 在 `plugins/manager.py` 的 `create_plugin_manager()` 中注册：
 
 ```python
+from yyict_toolbox.logging_system import plugin_logger_name
 from yyict_toolbox.plugins.builtin.my_plugin import MyPlugin
 
 def create_plugin_manager(...) -> PluginManager:
     manager = PluginManager()
-    manager.register(
-        CampusNetworkPlugin(
-            settings_store or CampusSettingsStore(),
-            log_queue or Queue(),
-            logger or logging.getLogger("yyict_toolbox"),
-        )
-    )
-    manager.register(MyPlugin())  # 新增
+    manager.register(MyPlugin(logging.getLogger(plugin_logger_name("my-tool-id"))))
     return manager
 ```
 
 **注册规范**：
 - 所有插件通过 pluggy Hook 规范接入，禁止绕过管理器让 UI 直接实例化插件
 - 只注册随应用分发的内置插件，不扫描外部插件目录
+- pluggy 后注册的插件先返回工具，侧栏顺序与注册顺序相反
 
 ### 5. 编写测试
 
@@ -148,6 +143,71 @@ def test_my_plugin_is_registered() -> None:
 python -m pytest tests/test_plugins.py -v
 ```
 
+## 插件日志
+
+插件日志统一走 `logging_system` 的事件中心，侧栏「运行日志」页面按插件分组展示。
+
+### logger 命名
+
+插件 logger 名称固定为 `yyict_toolbox.plugin.<稳定工具 ID>`，工具 ID 与 `ToolDescriptor.id` 一致：
+
+```python
+from yyict_toolbox.logging_system import plugin_logger_name
+
+logger = logging.getLogger(plugin_logger_name("my-tool-id"))
+# yyict_toolbox.plugin.my-tool-id
+```
+
+工具 ID 必须稳定：改名会让历史日志失去归属。系统日志使用 `yyict_toolbox.system`，版本更新日志使用 `yyict_toolbox.update`，两者都不是插件来源，会归到「系统日志」。
+
+### 在插件中使用 logger
+
+logger 由插件管理器注入，页面需要时继续向下传递：
+
+```python
+class MyPlugin:
+    def __init__(self, logger: logging.Logger) -> None:
+        self._logger = logger
+
+    @hookimpl
+    def toolbox_tools(self) -> list[ToolDescriptor]:
+        from yyict_toolbox.ui.my_page import MyPage
+
+        return [
+            ToolDescriptor(
+                id="my-tool-id",
+                name="我的工具",
+                description="工具描述",
+                view_factory=lambda: MyPage(self._logger),
+            )
+        ]
+```
+
+### 日志内容约束
+
+- 只记录状态、结果和错误类型；不写密码、令牌、认证请求地址或响应原文
+- 异常只写 `type(error).__name__`，不要写异常文本和回溯
+
+### 订阅统一日志流
+
+页面需要自己展示日志时，订阅事件中心并在关闭时取消订阅：
+
+```python
+from yyict_toolbox.logging_system import LogEvent, LogEventHub
+
+class MyPage(QWidget):
+    def __init__(self, events: LogEventHub) -> None:
+        super().__init__()
+        self._events = events
+        self._subscription = events.subscribe()
+
+    def shutdown(self) -> bool:
+        self._events.unsubscribe(self._subscription)
+        return True
+```
+
+事件中心会把同一条日志分发给所有订阅者，因此多个页面可以同时收到同一批事件；订阅队列有界，满了会丢弃最旧事件，页面始终能拿到最新日志。
+
 ## 示例文件清单
 
 | 文件 | 作用 |
@@ -155,6 +215,9 @@ python -m pytest tests/test_plugins.py -v
 | `src/yyict_toolbox/plugins/specs.py` | Hook 规范定义（`ToolDescriptor`、`ToolboxHookSpec`） |
 | `src/yyict_toolbox/plugins/builtin/demo_hello.py` | 示例插件类 `DemoHelloPlugin` |
 | `src/yyict_toolbox/ui/demo_hello_page.py` | 示例 UI 页面 `DemoHelloPage` |
+| `src/yyict_toolbox/plugins/builtin/system_logs.py` | 运行日志页面插件（工具 ID `system-logs`） |
+| `src/yyict_toolbox/ui/system_logs_page.py` | 统一日志页面（来源、等级筛选与实时追加） |
+| `src/yyict_toolbox/logging_system.py` | 日志事件模型、事件中心与文件日志配置 |
 | `src/yyict_toolbox/plugins/manager.py` | 插件管理器（注册入口） |
 | `tests/test_plugins.py` | 插件注册测试 |
 
@@ -173,7 +236,7 @@ def toolbox_tools(self) -> list[ToolDescriptor]:
 
 ### 工具 ID 可以修改吗？
 
-不建议。工具 ID 应保持稳定，修改可能导致配置或快捷方式失效。
+不建议。工具 ID 应保持稳定，修改可能导致配置、快捷方式或日志归属失效。
 
 ### 插件如何存储配置？
 
@@ -183,4 +246,5 @@ def toolbox_tools(self) -> list[ToolDescriptor]:
 
 1. 运行测试：`python -m pytest tests/test_plugins.py -v`
 2. 启动应用：`python -m yyict_toolbox`，在侧边栏查看工具是否出现
-3. UI 自动化测试使用 `QT_QPA_PLATFORM=offscreen`
+3. 在「运行日志」页面按来源筛选查看本插件的事件
+4. UI 自动化测试使用 `QT_QPA_PLATFORM=offscreen`
