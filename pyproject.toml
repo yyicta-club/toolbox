@@ -1,6 +1,6 @@
 [project]
 name = "yyict-toolbox"
-version = "0.1.0"
+version = "0.1.2"
 description = "A plugin-based campus utility toolbox"
 requires-python = ">=3.12"
 dependencies = [
