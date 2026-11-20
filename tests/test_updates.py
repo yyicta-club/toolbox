@@ -1,5 +1,8 @@
 import hashlib
 import logging
+import os
+import shutil
+import subprocess
 import sys
 import tomllib
 import urllib.error
@@ -13,20 +16,22 @@ import yyict_toolbox.updates as updates
 from yyict_toolbox import __version__
 from yyict_toolbox.logging_system import UPDATE_LOGGER_NAME
 from yyict_toolbox.updates import (
+    APPLY_LOG_NAME,
     EXECUTABLE_NAME,
     RESULT_FILE_NAME,
+    InstallHandshake,
     InstallPlan,
     ReleaseManifest,
     ReleaseSource,
     UpdateCandidate,
     UpdateCancelled,
     UpdateError,
-    apply_update,
     compare_versions,
     consume_update_result,
     download_package,
     extract_package,
     is_newer,
+    new_start_marker,
     parse_manifest,
     parse_version,
     prepare_update,
@@ -35,6 +40,21 @@ from yyict_toolbox.updates import (
     updates_root,
     write_apply_script,
 )
+
+WINDOWS_ONLY = pytest.mark.skipif(
+    sys.platform != 'win32', reason='替换脚本只在 Windows 上运行'
+)
+
+
+class FakeProcess:
+    """模拟脚本进程：poll() 返回退出码，仍在运行时返回 None。"""
+
+    def __init__(self, returncode=None, pid=1234):
+        self._returncode = returncode
+        self.pid = pid
+
+    def poll(self):
+        return self._returncode
 
 
 @pytest.fixture
@@ -345,6 +365,21 @@ def test_consume_update_result_ignores_unknown_status(tmp_path):
     assert consume_update_result(tmp_path) is None
 
 
+def test_consume_update_result_keeps_failure_log(tmp_path):
+    root = updates_root(tmp_path)
+    work_dir = root / "0.2.0"
+    package_dir = work_dir / "package"
+    package_dir.mkdir(parents=True)
+    (package_dir / "data.txt").write_text("payload", encoding="utf-8")
+    log_file = work_dir / APPLY_LOG_NAME
+    log_file.write_text("更新失败：robocopy 退出码 16", encoding="utf-8")
+    (root / RESULT_FILE_NAME).write_text("failed 0.2.0", encoding="utf-8")
+    assert consume_update_result(tmp_path) == ("failed", "0.2.0")
+    # 失败时保留更新日志供排查，只清理下载的安装包。
+    assert log_file.is_file()
+    assert not package_dir.exists()
+
+
 def test_package_version_matches_pyproject():
     pyproject = Path(__file__).resolve().parents[1] / "pyproject.toml"
     data = tomllib.loads(pyproject.read_text(encoding="utf-8"))
@@ -437,21 +472,157 @@ def test_update_download_failure_logs_error_type_only(update_logs, monkeypatch, 
     assert 'gitea.example' not in update_logs.text
 
 
-def test_apply_update_logs_install_start(update_logs, monkeypatch, tmp_path):
+def test_launch_update_install_logs_install_start(update_logs, monkeypatch, tmp_path):
     plan = InstallPlan('0.2.0', tmp_path, tmp_path, tmp_path / EXECUTABLE_NAME)
     monkeypatch.setattr(updates, 'install_directory', lambda: tmp_path)
-    monkeypatch.setattr(updates, 'launch_apply_script', lambda script: None)
-    apply_update(plan, 4321)
+    monkeypatch.setattr(updates, 'launch_apply_script', lambda script: FakeProcess())
+    launch = updates.launch_update_install(plan, 4321)
+    assert launch.marker.parent == tmp_path
+    assert not launch.marker.exists()
     assert '更新安装脚本已启动：版本 0.2.0' in update_logs.text
 
 
-def test_apply_update_failure_logs_error_type_only(update_logs, monkeypatch, tmp_path):
+def test_launch_update_install_failure_logs_error_type_only(update_logs, monkeypatch, tmp_path):
     plan = InstallPlan('0.2.0', tmp_path, tmp_path, tmp_path / EXECUTABLE_NAME)
     monkeypatch.setattr(updates, 'install_directory', lambda: tmp_path)
     with pytest.raises(UpdateError):
-        apply_update(plan, 4321)
+        updates.launch_update_install(plan, 4321)
     assert '更新安装脚本启动失败：版本 0.2.0' in update_logs.text
     assert 'UpdateError' in update_logs.text
+
+
+def test_apply_script_is_launched_in_visible_window(monkeypatch, tmp_path):
+    captured = {}
+
+    def fake_popen(command, **kwargs):
+        captured['command'] = command
+        captured['kwargs'] = kwargs
+        return FakeProcess()
+
+    monkeypatch.setattr(updates, 'is_frozen_install', lambda: True)
+    monkeypatch.setattr(updates, 'is_portable_install', lambda: False)
+    monkeypatch.setattr(subprocess, 'Popen', fake_popen)
+    updates.launch_apply_script(tmp_path / 'apply-update.ps1')
+    assert 'Hidden' not in captured['command']
+    assert '-WindowStyle' not in captured['command']
+    assert '-NonInteractive' not in captured['command']
+    flags = captured['kwargs']['creationflags']
+    assert not flags & getattr(subprocess, 'CREATE_NO_WINDOW', 0)
+
+
+def test_install_handshake_confirms_after_marker_is_written(tmp_path):
+    marker = tmp_path / 'started.marker'
+    handshake = InstallHandshake(marker, FakeProcess(), timeout=5)
+    marker.write_text('1234', encoding='utf-8')
+    assert handshake.wait() is None
+
+
+def test_install_handshake_fails_when_script_exits_early(tmp_path):
+    handshake = InstallHandshake(tmp_path / 'started.marker', FakeProcess(1), timeout=5)
+    reason = handshake.wait()
+    assert reason is not None
+    assert '退出码 1' in reason
+
+
+def test_install_handshake_times_out_without_marker(tmp_path):
+    handshake = InstallHandshake(tmp_path / 'started.marker', FakeProcess(), timeout=0.05)
+    reason = handshake.wait()
+    assert reason is not None
+    assert '超时' in reason
+
+
+def test_start_marker_is_unique_for_each_install(tmp_path):
+    assert new_start_marker(tmp_path) != new_start_marker(tmp_path)
+
+
+def run_apply_script(script: Path, work_dir: Path) -> subprocess.CompletedProcess:
+    """在隐藏窗口中运行替换脚本，避免测试时弹出控制台窗口。"""
+    output = work_dir / 'script-output.txt'
+    with output.open('w', encoding='utf-8') as handle:
+        return subprocess.run(
+            [
+                'powershell.exe',
+                '-NoProfile',
+                '-ExecutionPolicy',
+                'Bypass',
+                '-File',
+                str(script),
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=handle,
+            stderr=subprocess.STDOUT,
+            cwd=str(work_dir),
+            timeout=120,
+            creationflags=getattr(subprocess, 'CREATE_NO_WINDOW', 0),
+        )
+
+
+def prepare_script_case(tmp_path, staging_files=None):
+    """准备一次替换脚本运行所需的安装目录、暂存目录和脚本。"""
+    install_dir = tmp_path / 'app'
+    install_dir.mkdir()
+    (install_dir / EXECUTABLE_NAME).write_text('old', encoding='utf-8')
+    work_dir = tmp_path / 'updates' / '0.2.0'
+    staging = work_dir / 'package'
+    staging.mkdir(parents=True)
+    for name, content in (staging_files or {}).items():
+        (staging / name).write_text(content, encoding='utf-8')
+    plan = InstallPlan('0.2.0', work_dir, staging, staging / EXECUTABLE_NAME)
+    marker = work_dir / 'started-test.marker'
+    log = work_dir / APPLY_LOG_NAME
+    return install_dir, plan, marker, log
+
+
+@WINDOWS_ONLY
+def test_apply_script_replaces_directory_and_writes_marker(tmp_path):
+    install_dir, plan, marker, log = prepare_script_case(tmp_path)
+    # 用系统自带的小工具充当新版本可执行文件，脚本能真正启动它。
+    helper = Path(os.environ.get('SystemRoot', r'C:\Windows')) / 'System32' / 'whoami.exe'
+    if not helper.is_file():
+        pytest.skip('系统缺少 whoami.exe，无法验证重新启动步骤')
+    shutil.copy2(helper, plan.staging_dir / EXECUTABLE_NAME)
+    script = write_apply_script(install_dir, plan, 999999, marker, log, wait_seconds=5)
+    result = run_apply_script(script, plan.work_dir)
+    assert result.returncode == 0
+    assert marker.is_file()
+    assert (install_dir / EXECUTABLE_NAME).read_bytes() == helper.read_bytes()
+    assert not (install_dir.parent / 'app.old').exists()
+    result_text = (plan.work_dir.parent / RESULT_FILE_NAME).read_text(encoding='utf-8-sig')
+    assert 'applied 0.2.0' in result_text
+    log_text = log.read_text(encoding='utf-8-sig')
+    assert '更新脚本已启动' in log_text
+    assert '替换完成' in log_text
+
+
+@WINDOWS_ONLY
+def test_apply_script_keeps_install_directory_when_wait_times_out(tmp_path):
+    install_dir, plan, marker, log = prepare_script_case(tmp_path)
+    # 当前进程仍在运行，脚本等待超时后必须放弃替换。
+    script = write_apply_script(install_dir, plan, os.getpid(), marker, log, wait_seconds=1)
+    result = run_apply_script(script, plan.work_dir)
+    assert result.returncode == 1
+    assert marker.is_file()
+    assert (install_dir / EXECUTABLE_NAME).read_text(encoding='utf-8') == 'old'
+    result_text = (plan.work_dir.parent / RESULT_FILE_NAME).read_text(encoding='utf-8-sig')
+    assert 'failed 0.2.0' in result_text
+    log_text = log.read_text(encoding='utf-8-sig')
+    assert '已停止本次替换' in log_text
+
+
+@WINDOWS_ONLY
+def test_apply_script_restores_install_directory_when_replacement_fails(tmp_path):
+    install_dir, plan, marker, log = prepare_script_case(tmp_path)
+    # 暂存目录内容缺失，robocopy 失败后脚本必须恢复原安装目录。
+    plan = InstallPlan('0.2.0', plan.work_dir, plan.work_dir / 'missing', plan.executable)
+    script = write_apply_script(install_dir, plan, 999999, marker, log, wait_seconds=5)
+    result = run_apply_script(script, plan.work_dir)
+    assert result.returncode == 1
+    assert (install_dir / EXECUTABLE_NAME).read_text(encoding='utf-8') == 'old'
+    result_text = (plan.work_dir.parent / RESULT_FILE_NAME).read_text(encoding='utf-8-sig')
+    assert 'failed 0.2.0' in result_text
+    log_text = log.read_text(encoding='utf-8-sig')
+    assert '更新失败' in log_text
+    assert '已恢复原安装目录' in log_text
 
 
 def test_consume_update_result_logs_success_and_rollback(update_logs, tmp_path):

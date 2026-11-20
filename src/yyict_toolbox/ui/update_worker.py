@@ -9,9 +9,11 @@ from PySide6.QtCore import QObject, QThread, Signal
 
 from yyict_toolbox.logging_system import UPDATE_LOGGER_NAME
 from yyict_toolbox.updates import (
+    InstallHandshake,
     UpdateCandidate,
     UpdateCancelled,
     UpdateError,
+    append_update_log,
     prepare_update,
     resolve_update,
 )
@@ -95,3 +97,33 @@ class UpdateDownloadWorker(QThread):
             return
         logger.info("更新安装包校验成功：版本 %s", version)
         self.prepared.emit(plan)
+
+
+class UpdateInstallWorker(QThread):
+    """在后台等待更新脚本的启动标记，避免阻塞界面。
+
+    ``confirmed`` 表示脚本已经运行到写入标记这一步，可以退出主程序；
+    ``failed`` 携带可展示的原因，主程序应保留当前版本继续运行。
+    """
+
+    confirmed = Signal()
+    failed = Signal(str)
+
+    def __init__(
+        self,
+        handshake: InstallHandshake,
+        log_file: Path | None = None,
+        parent: QObject | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self._handshake = handshake
+        self._log_file = log_file
+
+    def run(self) -> None:
+        reason = self._handshake.wait()
+        if reason is None:
+            self.confirmed.emit()
+            return
+        if self._log_file is not None:
+            append_update_log(self._log_file, f"启动确认失败：{reason}")
+        self.failed.emit(reason)

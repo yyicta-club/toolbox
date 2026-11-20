@@ -1,3 +1,5 @@
+import logging
+
 from PySide6.QtCore import Qt, QUrl
 from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QFrame, QLabel, QPushButton, QVBoxLayout, QWidget
@@ -13,8 +15,9 @@ QUICK_LINKS: tuple[tuple[str, str], ...] = (
 class QuickLinksPage(QWidget):
     """展示内置校园链接，通过系统默认浏览器打开网站。"""
 
-    def __init__(self) -> None:
+    def __init__(self, logger: logging.Logger) -> None:
         super().__init__()
+        self._logger = logger
         layout = QVBoxLayout(self)
         layout.setContentsMargins(34, 26, 34, 24)
         layout.setSpacing(14)
@@ -45,7 +48,9 @@ class QuickLinksPage(QWidget):
                 "QPushButton:hover { color: #173b4d; text-decoration: underline; }"
             )
             button.clicked.connect(
-                lambda checked=False, link_url=url: self._open_link(link_url)
+                lambda checked=False, link_name=name, link_url=url: self._open_link(
+                    link_name, link_url
+                )
             )
             card_layout.addWidget(button)
             address = QLabel(url)
@@ -61,11 +66,13 @@ class QuickLinksPage(QWidget):
         layout.addWidget(self._status_label)
         layout.addStretch(1)
 
-    def _open_link(self, url: str) -> None:
+    def _open_link(self, name: str, url: str) -> None:
         if QDesktopServices.openUrl(QUrl(url)):
             self._status_label.clear()
+            self._logger.info("打开链接成功：%s", name)
         else:
             self._status_label.setText("无法打开浏览器，请复制上方地址到浏览器中访问。")
+            self._logger.warning("打开链接失败：%s", name)
 
     def shutdown(self) -> bool:
         """页面没有后台任务，可以立即关闭。"""

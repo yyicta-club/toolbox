@@ -9,7 +9,7 @@ os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 import pytest
 from PySide6.QtCore import QSettings, QTimer, QUrl
 from PySide6.QtGui import QDesktopServices
-from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSystemTrayIcon
+from PySide6.QtWidgets import QApplication, QLabel, QMessageBox, QPushButton, QSystemTrayIcon
 
 from yyict_toolbox import __version__
 from yyict_toolbox.logging_system import (
@@ -418,3 +418,26 @@ def test_log_page_unsubscribes_on_shutdown(log_page):
     publish('关闭后的事件')
     log_page.drain_events()
     assert '关闭后的事件' not in log_page._view.toPlainText()
+
+
+def test_app_exits_only_after_install_handshake(window, monkeypatch):
+    monkeypatch.setattr(QMessageBox, 'critical', lambda *args, **kwargs: None)
+    window._on_install_failed('更新脚本已退出（退出码 1）')
+    assert not window._exit_requested
+    window._on_install_confirmed()
+    assert window._exit_requested
+
+
+def test_install_launch_failure_keeps_current_version(window, monkeypatch):
+    import yyict_toolbox.ui.main_window as main_window
+    from yyict_toolbox.updates import InstallPlan, UpdateError
+
+    def fail(plan, app_pid):
+        raise UpdateError('源码模式不支持自动替换程序文件')
+
+    monkeypatch.setattr(QMessageBox, 'critical', lambda *args, **kwargs: None)
+    monkeypatch.setattr(main_window, 'launch_update_install', fail)
+    plan = InstallPlan('0.2.0', Path('.'), Path('.'), Path('.'))
+    window._start_install(plan)
+    assert not window._exit_requested
+    assert window._install_worker is None

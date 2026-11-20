@@ -17,12 +17,16 @@ import re
 import shutil
 import subprocess
 import sys
+import time
 import urllib.error
 import urllib.request
+import uuid
 import zipfile
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
+from datetime import datetime
 from pathlib import Path
+from typing import Protocol
 
 from yyict_toolbox import __version__
 from yyict_toolbox.logging_system import UPDATE_LOGGER_NAME
@@ -35,7 +39,14 @@ GITHUB_REPOSITORY = ""
 EXECUTABLE_NAME = "YYICToolbox.exe"
 MANIFEST_ASSET = "manifest.json"
 RESULT_FILE_NAME = "last-result.txt"
+APPLY_SCRIPT_NAME = "apply-update.ps1"
+APPLY_LOG_NAME = "apply-update.log"
+MARKER_PREFIX = "started-"
 REQUEST_TIMEOUT_SECONDS = 10.0
+# 脚本等待旧进程退出的上限：超过就停止替换，避免程序仍在运行时改动安装目录。
+DEFAULT_WAIT_SECONDS = 300
+# 应用等待脚本写启动标记的上限。
+INSTALL_CONFIRM_TIMEOUT = 10.0
 _CHUNK_SIZE = 256 * 1024
 _SHA256_PATTERN = re.compile(r"^[0-9a-f]{64}$")
 
@@ -391,28 +402,60 @@ def _remove_stale_versions(root: Path, keep: Path) -> None:
             shutil.rmtree(entry, ignore_errors=True)
 
 
-_APPLY_SCRIPT_TEMPLATE = """$ErrorActionPreference = 'Stop'
+_APPLY_SCRIPT_TEMPLATE = """param(
+    [int]$WaitSeconds = @WAIT@
+)
+$ErrorActionPreference = 'Stop'
 $appPid = @PID@
 $installDir = @INSTALL@
 $stagingDir = @STAGING@
 $version = @VERSION@
 $resultFile = @RESULT@
+$markerFile = @MARKER@
+$logFile = @LOG@
 $backupDir = $installDir + '.old'
 $executable = Join-Path $installDir 'YYICToolbox.exe'
 $moved = $false
 
-Set-Location $env:TEMP
-$deadline = (Get-Date).AddMinutes(5)
-while ((Get-Process -Id $appPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {
-    Start-Sleep -Milliseconds 500
+function Write-UpdateLog([string]$Message) {
+    try {
+        $line = '[' + (Get-Date -Format 'yyyy-MM-dd HH:mm:ss') + '] ' + $Message
+        Add-Content -LiteralPath $logFile -Value $line -Encoding UTF8 -ErrorAction Stop
+    } catch {
+        # 日志写入失败不能中断更新流程。
+    }
 }
 
+function Stop-ForUser([string]$Message) {
+    Write-Host $Message -ForegroundColor Red
+    if (-not [Console]::IsInputRedirected) {
+        Read-Host '按回车键关闭此窗口'
+    }
+}
+
+Set-Location $env:TEMP
+Write-UpdateLog "更新脚本已启动，进程号 $PID，目标版本 $version"
+
 try {
+    # 启动握手：脚本进入后立即写标记，主程序收到标记才会退出。
+    Set-Content -LiteralPath $markerFile -Value $PID -Encoding UTF8
+    Write-UpdateLog '已写入启动标记，等待校园工具箱退出'
+
+    $deadline = (Get-Date).AddSeconds($WaitSeconds)
+    while ((Get-Process -Id $appPid -ErrorAction SilentlyContinue) -and ((Get-Date) -lt $deadline)) {
+        Start-Sleep -Milliseconds 500
+    }
+    if (Get-Process -Id $appPid -ErrorAction SilentlyContinue) {
+        throw "等待校园工具箱退出超过 $WaitSeconds 秒，已停止本次替换"
+    }
+    Write-UpdateLog '校园工具箱已退出，开始替换安装目录'
+
     if (Test-Path -LiteralPath $backupDir) {
         Remove-Item -LiteralPath $backupDir -Recurse -Force
     }
     Move-Item -LiteralPath $installDir -Destination $backupDir
     $moved = $true
+    Write-UpdateLog '已备份原安装目录'
     robocopy $stagingDir $installDir /E /MOVE /NFL /NDL /NJH /NJS | Out-Null
     if ($LASTEXITCODE -ge 8) {
         throw "robocopy 退出码 $LASTEXITCODE"
@@ -420,21 +463,28 @@ try {
     if (-not (Test-Path -LiteralPath $executable)) {
         throw '更新后的目录缺少可执行文件'
     }
+    Write-UpdateLog '替换完成，准备启动新版本'
     # 先写结果再启动，保证新进程启动时能读到本次更新状态。
     Set-Content -LiteralPath $resultFile -Value "applied $version" -Encoding UTF8
     Start-Process -FilePath $executable -WorkingDirectory $installDir
     Remove-Item -LiteralPath $backupDir -Recurse -Force -ErrorAction SilentlyContinue
+    Write-UpdateLog '更新成功，新版本已启动'
 }
 catch {
+    $reason = $_.Exception.Message
+    Write-UpdateLog "更新失败：$reason"
     if ($moved -and (Test-Path -LiteralPath $installDir)) {
         Remove-Item -LiteralPath $installDir -Recurse -Force -ErrorAction SilentlyContinue
     }
     if ($moved -and (Test-Path -LiteralPath $backupDir)) {
         Move-Item -LiteralPath $backupDir -Destination $installDir
+        Write-UpdateLog '已恢复原安装目录'
     }
     Set-Content -LiteralPath $resultFile -Value "failed $version" -Encoding UTF8
+    Stop-ForUser "更新失败：$reason`n当前版本已保留，日志：$logFile"
     exit 1
 }
+exit 0
 """
 
 
@@ -442,39 +492,108 @@ def _ps_literal(value: str | Path) -> str:
     return "'" + str(value).replace("'", "''") + "'"
 
 
-def write_apply_script(install_dir: Path, plan: InstallPlan, app_pid: int) -> Path:
-    """生成等待本进程退出后替换目录的 PowerShell 脚本；返回脚本路径。"""
-    script = plan.work_dir / "apply-update.ps1"
+class ProcessProbe(Protocol):
+    """可查询退出状态的进程。"""
+
+    def poll(self) -> int | None:
+        """进程已退出时返回退出码，仍在运行时返回 None。"""
+
+
+@dataclass(frozen=True, slots=True)
+class InstallLaunch:
+    """一次安装启动的结果：脚本、启动标记、日志和进程。"""
+
+    script: Path
+    marker: Path
+    log: Path
+    process: ProcessProbe
+
+
+@dataclass(frozen=True, slots=True)
+class InstallHandshake:
+    """更新脚本的启动握手。
+
+    脚本进入后立即写入标记文件；主程序收到标记才允许退出。进程提前退出或
+    等待超时都视为安装未开始，主程序应保留当前版本继续运行。
+    """
+
+    marker: Path
+    process: ProcessProbe
+    timeout: float = INSTALL_CONFIRM_TIMEOUT
+
+    def wait(self) -> str | None:
+        """等待脚本写入启动标记；成功返回 None，失败返回可展示的原因。"""
+        deadline = time.monotonic() + self.timeout
+        while True:
+            if self.marker.is_file():
+                return None
+            returncode = self.process.poll()
+            if returncode is not None:
+                return f"更新脚本已退出（退出码 {returncode}），未确认脚本开始执行"
+            if time.monotonic() >= deadline:
+                return "等待更新脚本启动确认超时"
+            time.sleep(0.05)
+
+
+def new_start_marker(work_dir: Path) -> Path:
+    """生成本次安装独立的启动标记路径，避免沿用上次留下的旧标记。"""
+    return work_dir / f"{MARKER_PREFIX}{uuid.uuid4().hex}.marker"
+
+
+def append_update_log(log_file: Path, message: str) -> None:
+    """向更新工作目录的日志追加一行；写入失败不影响其他流程。"""
+    try:
+        with log_file.open("a", encoding="utf-8") as handle:
+            handle.write(f"[{datetime.now():%Y-%m-%d %H:%M:%S}] {message}\n")
+    except OSError:
+        pass
+
+
+def write_apply_script(
+    install_dir: Path,
+    plan: InstallPlan,
+    app_pid: int,
+    marker_file: Path | None = None,
+    log_file: Path | None = None,
+    wait_seconds: int = DEFAULT_WAIT_SECONDS,
+) -> Path:
+    """生成等待本进程退出后替换目录的 PowerShell 脚本；返回脚本路径。
+
+    marker_file 是本次安装的启动标记，脚本进入后立即写入；log_file 记录脚本
+    的关键步骤与错误；wait_seconds 是脚本等待旧进程退出的上限。
+    """
+    script = plan.work_dir / APPLY_SCRIPT_NAME
     script.parent.mkdir(parents=True, exist_ok=True)
+    marker = marker_file or new_start_marker(plan.work_dir)
+    log = log_file or plan.work_dir / APPLY_LOG_NAME
     content = (
-        _APPLY_SCRIPT_TEMPLATE.replace("@PID@", str(int(app_pid)))
+        _APPLY_SCRIPT_TEMPLATE.replace("@WAIT@", str(int(wait_seconds)))
+        .replace("@PID@", str(int(app_pid)))
         .replace("@INSTALL@", _ps_literal(install_dir))
         .replace("@STAGING@", _ps_literal(plan.staging_dir))
         .replace("@VERSION@", _ps_literal(plan.version))
         .replace("@RESULT@", _ps_literal(plan.work_dir.parent / RESULT_FILE_NAME))
+        .replace("@MARKER@", _ps_literal(marker))
+        .replace("@LOG@", _ps_literal(log))
     )
     script.write_text(content, encoding="utf-8-sig")
     return script
 
 
-def launch_apply_script(script: Path) -> None:
-    """后台启动替换脚本；脚本自身等待进程退出，调用方随后应尽快退出。"""
+def launch_apply_script(script: Path) -> subprocess.Popen:
+    """在可见窗口中启动替换脚本；脚本自身等待进程退出，调用方随后应尽快退出。"""
     if not is_frozen_install():
         raise UpdateError("源码模式不支持自动替换程序文件")
     if is_portable_install():
         raise UpdateError("便携版是单个 exe，请下载新版本后手动替换")
-    creation_flags = getattr(subprocess, "CREATE_NO_WINDOW", 0) | getattr(
-        subprocess, "DETACHED_PROCESS", 0
-    )
-    subprocess.Popen(
+    # 安装过程需要用户可见：独立控制台窗口，失败时窗口保留错误信息。
+    creation_flags = getattr(subprocess, "CREATE_NEW_CONSOLE", 0)
+    return subprocess.Popen(
         [
             "powershell.exe",
             "-NoProfile",
-            "-NonInteractive",
             "-ExecutionPolicy",
             "Bypass",
-            "-WindowStyle",
-            "Hidden",
             "-File",
             str(script),
         ],
@@ -484,23 +603,32 @@ def launch_apply_script(script: Path) -> None:
     )
 
 
-def apply_update(plan: InstallPlan, app_pid: int) -> Path:
-    """生成并启动替换脚本；失败抛 ``UpdateError`` 并写入更新日志。
+def launch_update_install(plan: InstallPlan, app_pid: int) -> InstallLaunch:
+    """生成替换脚本并在可见窗口中启动，返回启动信息用于握手。
 
     日志只记录版本和错误类型，不记录脚本路径或下载地址。
     """
     logger = logging.getLogger(UPDATE_LOGGER_NAME)
+    marker = new_start_marker(plan.work_dir)
+    log_file = plan.work_dir / APPLY_LOG_NAME
     try:
-        script = write_apply_script(install_directory(), plan, app_pid)
-        launch_apply_script(script)
+        script = write_apply_script(
+            install_directory(),
+            plan,
+            app_pid,
+            marker,
+            log_file,
+        )
+        process = launch_apply_script(script)
     except UpdateError as error:
         logger.error("更新安装脚本启动失败：版本 %s（%s）", plan.version, type(error).__name__)
         raise
     except OSError as error:
         logger.error("更新安装脚本启动失败：版本 %s（%s）", plan.version, type(error).__name__)
         raise UpdateError(f"无法启动更新安装脚本：{error}") from error
+    append_update_log(log_file, f"已启动更新脚本，进程号 {process.pid}")
     logger.info("更新安装脚本已启动：版本 %s", plan.version)
-    return script
+    return InstallLaunch(script, marker, log_file, process)
 
 
 def consume_update_result(root: Path | None = None) -> tuple[str, str] | None:
@@ -527,6 +655,13 @@ def consume_update_result(root: Path | None = None) -> tuple[str, str] | None:
         logger.info("自动更新成功：已更新到 %s", parts[1])
     else:
         logger.warning("自动更新失败并已回滚：版本 %s", parts[1])
-    # 替换已完成或已回滚，安装包与解压目录都不再需要，避免长期占用磁盘。
-    shutil.rmtree(path.parent / parts[1], ignore_errors=True)
+    version_dir = path.parent / parts[1]
+    if parts[0] == "applied":
+        # 替换已完成，安装包与解压目录都不再需要，避免长期占用磁盘。
+        shutil.rmtree(version_dir, ignore_errors=True)
+    else:
+        # 失败时保留更新日志供排查，只清理已下载的安装包。
+        shutil.rmtree(version_dir / "package", ignore_errors=True)
+        for archive in version_dir.glob("*.zip"):
+            archive.unlink(missing_ok=True)
     return parts[0], parts[1]
