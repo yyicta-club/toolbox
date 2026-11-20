@@ -14,6 +14,7 @@ try {
         --paths src `
         --add-data "src/yyict_toolbox/resources/logo.png;resources" `
         --add-data "src/yyict_toolbox/resources/images/xiehuiqq.png;resources/images" `
+        --icon "src/yyict_toolbox/resources/logo.ico" `
         --distpath dist `
         --workpath build `
         --onefile `
