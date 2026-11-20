@@ -5,7 +5,8 @@ from queue import Queue
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
 
 import pytest
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QSettings, QUrl
+from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSystemTrayIcon
 
 from yyict_toolbox import __version__
@@ -17,6 +18,7 @@ from yyict_toolbox.plugins.builtin.campus_settings import (
 from yyict_toolbox.plugins.manager import create_plugin_manager
 from yyict_toolbox.ui.campus_network_page import CampusNetworkPage
 from yyict_toolbox.ui.main_window import MainWindow
+from yyict_toolbox.ui.quick_links_page import QuickLinksPage
 
 
 class FakeCredentialBackend:
@@ -67,6 +69,46 @@ def test_main_window_displays_campus_network_configuration(window):
     assert page._interval_input.value() == 60
     assert page._carrier_input.count() == 3
     assert page._level_input.count() == 3
+
+
+@pytest.mark.parametrize('name, url', [
+    ('学校官网', 'https://www.jxyy.edu.cn/'),
+    ('数字校园', 'https://cas.jxyy.edu.cn/lyuapServer/login'),
+    ('教务系统', 'https://jw.jxyy.edu.cn:9002/jwglxt'),
+])
+def test_quick_links_open_in_default_browser(window, monkeypatch, name, url) -> None:
+    opened_urls: list[str] = []
+
+    def open_url(address: QUrl) -> bool:
+        opened_urls.append(address.toString())
+        return True
+
+    monkeypatch.setattr(QDesktopServices, 'openUrl', open_url)
+    window._tool_buttons['quick-links'].click()
+    page = window._pages['quick-links']
+    assert isinstance(page, QuickLinksPage)
+    assert url in [label.text() for label in page.findChildren(QLabel)]
+    button = next(button for button in page.findChildren(QPushButton) if button.text() == name)
+    button.click()
+    assert opened_urls == [url]
+    assert page._status_label.text() == ''
+    window._tool_buttons['campus-network-login'].click()
+    window._tool_buttons['quick-links'].click()
+    assert window._pages['quick-links'] is page
+    assert page.shutdown() is True
+    page.wait_for_shutdown()
+
+
+def test_quick_links_browser_failure_can_be_retried(window, monkeypatch) -> None:
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: False)
+    window._tool_buttons['quick-links'].click()
+    page = window._pages['quick-links']
+    button = page.findChildren(QPushButton)[0]
+    button.click()
+    assert '无法打开浏览器' in page._status_label.text()
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: True)
+    button.click()
+    assert page._status_label.text() == ''
 
 
 @pytest.mark.parametrize('level, expected', [
