@@ -13,11 +13,12 @@ try {
         --name YYICToolbox `
         --paths src `
         --add-data "src/yyict_toolbox/resources/logo.png;resources" `
+        --add-data "src/yyict_toolbox/resources/images/xiehuiqq.png;resources/images" `
         --distpath dist `
         --workpath build `
         src/yyict_toolbox/__main__.py
     if ($LASTEXITCODE -ne 0) {
-        throw "PyInstaller 构建失败（退出码 $LASTEXITCODE）"
+        throw "PyInstaller build failed (exit code $LASTEXITCODE)"
     }
 } finally {
     Pop-Location

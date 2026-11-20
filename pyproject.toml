@@ -26,7 +26,7 @@ build-backend = "setuptools.build_meta"
 where = ["src"]
 
 [tool.setuptools.package-data]
-yyict_toolbox = ["resources/*.png"]
+yyict_toolbox = ["resources/*.png", "resources/images/*.png"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

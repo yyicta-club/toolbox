@@ -1,5 +1,4 @@
 from collections.abc import Sequence
-from pathlib import Path
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
 from PySide6.QtGui import QAction, QCloseEvent, QIcon, QPixmap
@@ -19,7 +18,7 @@ from PySide6.QtWidgets import (
 )
 
 from yyict_toolbox.plugins.specs import ToolDescriptor
-from yyict_toolbox.resources import logo_path
+from yyict_toolbox.resources import image_path, logo_path
 
 
 class MainWindow(QMainWindow):
@@ -135,9 +134,7 @@ class MainWindow(QMainWindow):
             self._tool_buttons[tool.id] = button
 
         layout.addStretch(1)
-        self._image_pixmap = QPixmap(
-            str(Path(__file__).resolve().parent.parent / "resources" / "images" / "xiehuiqq.png")
-        )
+        self._image_pixmap = QPixmap(str(image_path("xiehuiqq.png")))
         join_button = QPushButton()
         if not self._image_pixmap.isNull():
             join_button.setIcon(QIcon(self._image_pixmap))
