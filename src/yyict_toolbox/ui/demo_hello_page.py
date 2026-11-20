@@ -33,8 +33,9 @@ class DemoHelloPage(QWidget):
         layout.addWidget(title)
 
         hint = QLabel(
+            "<b>本项目是开源项目，欢迎各位开发者进群交流一起维护&贡献代码，也欢迎各位同学进群或在 issues 中提出问题和建议。</b>"
             "这是最小可运行的插件模板。\n"
-            "学习者可复制本文件和 demo_hello.py 作为新插件的起点。"
+
         )
         hint.setWordWrap(True)
         hint.setStyleSheet("color: #667783; font-size: 13px;")
