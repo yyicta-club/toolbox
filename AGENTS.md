@@ -12,6 +12,7 @@
 - 内置插件和网络服务放在 `plugins/builtin/`；插件入口可注册页面工厂，协议服务不依赖 UI 页面。
 - 窗口与展示逻辑放在 `ui/`；主窗口从插件管理器获取页面工厂，不硬编码插件业务。
 - 公共日志配置放在 `logging_system.py`；打包程序日志写入 exe 同级的 `log/toolbox.log`。
+- 应用内更新逻辑放在 `updates.py`（清单解析、下载校验、替换脚本），检查与下载线程放在 `ui/update_worker.py`；发布包和清单由 `scripts/build_release.ps1` 生成，单文件便携版由 `scripts/build_windows_onefile.ps1` 生成。
 - 测试放在 `tests/`，按被测行为组织。
 
 ## 代码规范

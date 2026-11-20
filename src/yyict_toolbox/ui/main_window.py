@@ -1,7 +1,15 @@
+import os
 from collections.abc import Sequence
 
-from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QIcon, QPixmap, QResizeEvent
+from PySide6.QtCore import QSize, Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import (
+    QAction,
+    QCloseEvent,
+    QDesktopServices,
+    QIcon,
+    QPixmap,
+    QResizeEvent,
+)
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -9,6 +17,7 @@ from PySide6.QtWidgets import (
     QLabel,
     QMainWindow,
     QMenu,
+    QProgressDialog,
     QPushButton,
     QSizePolicy,
     QStyle,
@@ -17,8 +26,22 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from yyict_toolbox import __version__
 from yyict_toolbox.plugins.specs import ToolDescriptor
 from yyict_toolbox.resources import image_path, logo_path
+from yyict_toolbox.ui.update_worker import UpdateCheckWorker, UpdateDownloadWorker
+from yyict_toolbox.updates import (
+    InstallPlan,
+    UpdateCandidate,
+    UpdateError,
+    install_directory,
+    is_frozen_install,
+    is_portable_install,
+    launch_apply_script,
+    release_page_url,
+    updates_root,
+    write_apply_script,
+)
 
 
 class MainWindow(QMainWindow):
@@ -30,6 +53,9 @@ class MainWindow(QMainWindow):
         self._tool_buttons: dict[str, QPushButton] = {}
         self._pages: dict[str, QWidget] = {}
         self._exit_requested = False
+        self._update_worker: UpdateCheckWorker | None = None
+        self._download_worker: UpdateDownloadWorker | None = None
+        self._progress_dialog: QProgressDialog | None = None
         self._shutdown_timer = QTimer(self)
         self._shutdown_timer.setInterval(100)
         self._shutdown_timer.timeout.connect(self._complete_exit)
@@ -80,6 +106,15 @@ class MainWindow(QMainWindow):
         return QSystemTrayIcon.isSystemTrayAvailable()
 
     def shutdown(self) -> bool:
+        download = self._download_worker
+        if download is not None:
+            download.cancel()
+            download.wait(5000)
+            self._download_worker = None
+        check = self._update_worker
+        if check is not None:
+            check.wait(2000)
+            self._update_worker = None
         stopped = True
         for page in self._pages.values():
             shutdown = getattr(page, "shutdown", None)
@@ -166,7 +201,21 @@ class MainWindow(QMainWindow):
         exit_button = QPushButton("退出工具箱")
         exit_button.clicked.connect(self._exit_application)
         layout.addWidget(exit_button)
-        layout.addWidget(QLabel("YYICT TOOLBOX  ·  0.1.0", objectName="muted"))
+        self._update_button = QPushButton(
+            f"YYICT TOOLBOX  ·  v{__version__}",
+            objectName="versionButton",
+        )
+        self._update_button.setToolTip("点击检查更新")
+        self._update_button.setCursor(Qt.CursorShape.PointingHandCursor)
+        self._update_button.setStyleSheet(
+            "QPushButton#versionButton { border: none; background: transparent;"
+            " color: #667783; font-size: 11px; font-weight: 600; text-align: left;"
+            " min-height: 0; padding: 4px 0; }"
+            "QPushButton#versionButton:hover { color: #12615e; }"
+            "QPushButton#versionButton:disabled { color: #9aa7b0; }"
+        )
+        self._update_button.clicked.connect(self._check_updates)
+        layout.addWidget(self._update_button)
         return sidebar
 
     def _build_content(self) -> QWidget:
@@ -302,6 +351,154 @@ class MainWindow(QMainWindow):
         self.show()
         self.raise_()
         self.activateWindow()
+
+    def report_update_result(self, result: tuple[str, str] | None) -> None:
+        """启动后展示上次自动更新的结果。"""
+        if result is None:
+            return
+        status, version = result
+        if status == "applied":
+            self._show_text_tip(f"已更新到 {version}", 4000)
+            return
+        QMessageBox.warning(self, "更新未完成", "自动更新失败，已恢复原版本。详情见日志。")
+
+    def _check_updates(self) -> None:
+        if self._update_worker is not None or self._download_worker is not None:
+            return
+        if not is_frozen_install():
+            self._show_text_tip("源码模式不执行自动更新，请使用打包版本", 3000)
+            return
+        self._update_button.setEnabled(False)
+        self._update_button.setText(f"YYICT TOOLBOX  ·  v{__version__}  检查中…")
+        worker = UpdateCheckWorker()
+        worker.resolved.connect(self._on_update_resolved)
+        worker.failed.connect(self._on_update_check_failed)
+        worker.finished.connect(self._on_update_check_finished)
+        self._update_worker = worker
+        worker.start()
+
+    def _on_update_check_finished(self) -> None:
+        self._update_worker = None
+        self._update_button.setEnabled(True)
+        self._update_button.setText(f"YYICT TOOLBOX  ·  v{__version__}")
+
+    def _on_update_check_failed(self, message: str) -> None:
+        self._show_text_tip(message, 6000)
+
+    def _on_update_resolved(self, candidate: object) -> None:
+        if not isinstance(candidate, UpdateCandidate):
+            self._show_text_tip("已是最新版本", 3000)
+            return
+        manifest = candidate.manifest
+        notes = manifest.notes.strip() or "本次更新没有提供说明。"
+        if len(notes) > 800:
+            notes = notes[:800] + "…"
+        dialog = QMessageBox(self)
+        dialog.setIcon(QMessageBox.Icon.Information)
+        if candidate.is_required(__version__):
+            dialog.setWindowTitle("需要更新")
+            dialog.setText(f"当前版本 v{__version__} 已不再受支持，请更新到 {manifest.version}")
+        else:
+            dialog.setWindowTitle("发现新版本")
+            dialog.setText(f"发现新版本 {manifest.version}（当前 v{__version__}）")
+        dialog.setInformativeText(notes)
+        update_button = dialog.addButton("立即更新", QMessageBox.ButtonRole.AcceptRole)
+        dialog.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() is not update_button:
+            return
+        if is_portable_install():
+            self._offer_manual_update(candidate)
+            return
+        self._start_download(candidate)
+
+    def _offer_manual_update(self, candidate: UpdateCandidate) -> None:
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("便携版更新")
+        dialog.setIcon(QMessageBox.Icon.Information)
+        dialog.setText(f"发现新版本 {candidate.manifest.version}")
+        dialog.setInformativeText("便携版是单个 exe，请下载新版本后替换当前文件。")
+        open_button = dialog.addButton("打开下载页", QMessageBox.ButtonRole.AcceptRole)
+        dialog.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() is not open_button:
+            return
+        if not QDesktopServices.openUrl(QUrl(release_page_url())):
+            self._show_text_tip(f"无法打开浏览器，请手动访问 {release_page_url()}", 6000)
+
+    def _start_download(self, candidate: UpdateCandidate) -> None:
+        dialog = QProgressDialog("正在下载更新…", "取消", 0, 100, self)
+        dialog.setWindowTitle("软件更新")
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(0)
+        dialog.setAutoClose(False)
+        dialog.setAutoReset(False)
+        worker = UpdateDownloadWorker(candidate, updates_root())
+        worker.progress.connect(self._on_download_progress)
+        worker.prepared.connect(self._on_update_prepared)
+        worker.failed.connect(self._on_update_failed)
+        worker.cancelled.connect(self._on_update_cancelled)
+        worker.finished.connect(self._on_download_finished)
+        dialog.canceled.connect(worker.cancel)
+        self._download_worker = worker
+        self._progress_dialog = dialog
+        worker.start()
+        dialog.show()
+
+    def _on_download_progress(self, received: int, total: int) -> None:
+        dialog = self._progress_dialog
+        if dialog is None:
+            return
+        total = max(total, 1)
+        dialog.setValue(min(100, received * 100 // total))
+        dialog.setLabelText(
+            f"正在下载更新… {received / (1024 * 1024):.1f} / {total / (1024 * 1024):.1f} MB"
+        )
+
+    def _on_update_prepared(self, plan: object) -> None:
+        self._close_progress_dialog()
+        if not isinstance(plan, InstallPlan):
+            return
+        dialog = QMessageBox(self)
+        dialog.setWindowTitle("安装更新")
+        dialog.setIcon(QMessageBox.Icon.Question)
+        dialog.setText(f"更新 {plan.version} 已下载完成，是否立即退出并安装？")
+        dialog.setInformativeText("程序会短暂退出，安装完成后自动重新启动。")
+        install_button = dialog.addButton("立即安装", QMessageBox.ButtonRole.AcceptRole)
+        dialog.addButton("稍后", QMessageBox.ButtonRole.RejectRole)
+        dialog.exec()
+        if dialog.clickedButton() is not install_button:
+            self._show_text_tip("已下载更新，稍后可再次检查更新安装", 4000)
+            return
+        try:
+            script = write_apply_script(install_directory(), plan, os.getpid())
+            launch_apply_script(script)
+        except (OSError, UpdateError) as error:
+            QMessageBox.critical(self, "无法安装更新", str(error))
+            return
+        self._exit_application()
+
+    def _on_update_failed(self, message: str) -> None:
+        self._close_progress_dialog()
+        QMessageBox.critical(self, "更新失败", message)
+
+    def _on_update_cancelled(self) -> None:
+        self._close_progress_dialog()
+        self._show_text_tip("已取消更新", 3000)
+
+    def _on_download_finished(self) -> None:
+        worker = self._download_worker
+        self._download_worker = None
+        if worker is not None:
+            worker.deleteLater()
+
+    def _close_progress_dialog(self) -> None:
+        dialog = self._progress_dialog
+        self._progress_dialog = None
+        if dialog is None:
+            return
+        dialog.close()
+        dialog.deleteLater()
 
     def _exit_application(self) -> None:
         self._exit_requested = True

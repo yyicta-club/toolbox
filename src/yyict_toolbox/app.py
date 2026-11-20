@@ -1,6 +1,5 @@
 import logging
 import sys
-from pathlib import Path
 
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
@@ -11,12 +10,7 @@ from yyict_toolbox.plugins.manager import create_plugin_manager
 from yyict_toolbox.resources import logo_path
 from yyict_toolbox.single_instance import SingleInstanceGuard, default_lock_path
 from yyict_toolbox.ui.main_window import MainWindow
-
-
-def application_directory() -> Path:
-    if getattr(sys, "frozen", False):
-        return Path(sys.executable).resolve().parent
-    return Path(__file__).resolve().parents[2]
+from yyict_toolbox.updates import consume_update_result, install_directory
 
 
 def main() -> int:
@@ -42,11 +36,12 @@ def main() -> int:
 
 def _run_application(app: QApplication) -> int:
     try:
-        log_queue = configure_logging(application_directory())
+        log_queue = configure_logging(install_directory())
     except OSError:
         QMessageBox.critical(None, "日志初始化失败", "无法写入应用目录，请将软件放在可写目录中。")
         return 1
     logger = logging.getLogger("yyict_toolbox")
+    update_result = consume_update_result()
     plugin_manager = create_plugin_manager(
         CampusSettingsStore(),
         log_queue,
@@ -59,6 +54,9 @@ def _run_application(app: QApplication) -> int:
     app.aboutToQuit.connect(window.shutdown)
     window.show()
     logger.info("工具箱已启动")
+    if update_result is not None:
+        logger.info("上次更新结果：%s %s", update_result[0], update_result[1])
+    window.report_update_result(update_result)
     try:
         return app.exec()
     finally:
