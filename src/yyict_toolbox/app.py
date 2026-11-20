@@ -4,7 +4,11 @@ import sys
 from PySide6.QtGui import QFont, QIcon
 from PySide6.QtWidgets import QApplication, QMessageBox
 
-from yyict_toolbox.logging_system import configure_logging
+from yyict_toolbox.logging_system import (
+    SYSTEM_LOGGER_NAME,
+    configure_logging,
+    event_hub,
+)
 from yyict_toolbox.plugins.builtin.campus_settings import CampusSettingsStore
 from yyict_toolbox.plugins.manager import create_plugin_manager
 from yyict_toolbox.resources import logo_path
@@ -40,12 +44,12 @@ def _run_application(app: QApplication) -> int:
     except OSError:
         QMessageBox.critical(None, "日志初始化失败", "无法写入应用目录，请将软件放在可写目录中。")
         return 1
-    logger = logging.getLogger("yyict_toolbox")
+    logger = logging.getLogger(SYSTEM_LOGGER_NAME)
     update_result = consume_update_result()
     plugin_manager = create_plugin_manager(
         CampusSettingsStore(),
         log_queue,
-        logger,
+        events=event_hub(),
     )
     window = MainWindow(plugin_manager.get_tools())
     if window.tray_available:
@@ -54,8 +58,6 @@ def _run_application(app: QApplication) -> int:
     app.aboutToQuit.connect(window.shutdown)
     window.show()
     logger.info("工具箱已启动")
-    if update_result is not None:
-        logger.info("上次更新结果：%s %s", update_result[0], update_result[1])
     window.report_update_result(update_result)
     try:
         return app.exec()

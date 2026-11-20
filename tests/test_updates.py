@@ -1,4 +1,5 @@
 import hashlib
+import logging
 import sys
 import tomllib
 import urllib.error
@@ -7,8 +8,10 @@ from pathlib import Path
 
 import pytest
 
+import yyict_toolbox.ui.update_worker as update_worker
 import yyict_toolbox.updates as updates
 from yyict_toolbox import __version__
+from yyict_toolbox.logging_system import UPDATE_LOGGER_NAME
 from yyict_toolbox.updates import (
     EXECUTABLE_NAME,
     RESULT_FILE_NAME,
@@ -16,7 +19,9 @@ from yyict_toolbox.updates import (
     ReleaseManifest,
     ReleaseSource,
     UpdateCandidate,
+    UpdateCancelled,
     UpdateError,
+    apply_update,
     compare_versions,
     consume_update_result,
     download_package,
@@ -30,6 +35,20 @@ from yyict_toolbox.updates import (
     updates_root,
     write_apply_script,
 )
+
+
+@pytest.fixture
+def update_logs(caplog):
+    """捕获版本更新日志；更新 logger 不向根 logger 传播，需要直接挂载捕获器。"""
+    logger = logging.getLogger(UPDATE_LOGGER_NAME)
+    previous_level = logger.level
+    logger.setLevel(logging.INFO)
+    logger.addHandler(caplog.handler)
+    try:
+        yield caplog
+    finally:
+        logger.removeHandler(caplog.handler)
+        logger.setLevel(previous_level)
 
 
 def make_package(path: Path, files: dict[str, str] | None = None) -> Path:
@@ -356,3 +375,93 @@ def test_portable_install_cannot_apply_update_automatically(tmp_path, monkeypatc
 
 def test_release_page_url_points_to_repository_releases():
     assert release_page_url() == f"{updates.GITEA_SERVER}/{updates.GITEA_REPOSITORY}/releases"
+
+
+def update_candidate(version='0.2.0'):
+    return UpdateCandidate(
+        ReleaseSource('gitea', 'https://gitea.example/api'),
+        ReleaseManifest(version, '说明', '0.1.0', 'app.zip', '0' * 64, 1),
+        'https://gitea.example/app.zip',
+    )
+
+
+def test_update_check_logs_start_and_no_available_update(update_logs, monkeypatch):
+    monkeypatch.setattr(update_worker, 'resolve_update', lambda: None)
+    update_worker.UpdateCheckWorker().run()
+    assert '更新检查开始' in update_logs.text
+    assert '无可用更新' in update_logs.text
+
+
+def test_update_check_logs_found_version(update_logs, monkeypatch):
+    monkeypatch.setattr(update_worker, 'resolve_update', update_candidate)
+    update_worker.UpdateCheckWorker().run()
+    assert '更新检查完成：发现新版本 0.2.0' in update_logs.text
+
+
+def test_update_check_failure_logs_error_type_only(update_logs, monkeypatch):
+    def fail():
+        raise UpdateError('无法获取更新信息：gitea：连接超时')
+
+    monkeypatch.setattr(update_worker, 'resolve_update', fail)
+    update_worker.UpdateCheckWorker().run()
+    assert '更新检查失败' in update_logs.text
+    assert 'UpdateError' in update_logs.text
+    assert 'gitea.example' not in update_logs.text
+
+
+def test_update_download_logs_start_and_verified_package(update_logs, monkeypatch, tmp_path):
+    plan = InstallPlan('0.2.0', tmp_path, tmp_path, tmp_path / EXECUTABLE_NAME)
+    monkeypatch.setattr(update_worker, 'prepare_update', lambda *args, **kwargs: plan)
+    update_worker.UpdateDownloadWorker(update_candidate(), tmp_path).run()
+    assert '更新下载开始：版本 0.2.0' in update_logs.text
+    assert '更新安装包校验成功：版本 0.2.0' in update_logs.text
+
+
+def test_update_download_logs_cancellation(update_logs, monkeypatch, tmp_path):
+    def cancel(*args, **kwargs):
+        raise UpdateCancelled()
+
+    monkeypatch.setattr(update_worker, 'prepare_update', cancel)
+    update_worker.UpdateDownloadWorker(update_candidate(), tmp_path).run()
+    assert '更新下载已取消：版本 0.2.0' in update_logs.text
+
+
+def test_update_download_failure_logs_error_type_only(update_logs, monkeypatch, tmp_path):
+    def fail(*args, **kwargs):
+        raise UpdateError('安装包校验失败，请稍后重试')
+
+    monkeypatch.setattr(update_worker, 'prepare_update', fail)
+    update_worker.UpdateDownloadWorker(update_candidate(), tmp_path).run()
+    assert '更新下载失败：版本 0.2.0' in update_logs.text
+    assert 'UpdateError' in update_logs.text
+    assert 'gitea.example' not in update_logs.text
+
+
+def test_apply_update_logs_install_start(update_logs, monkeypatch, tmp_path):
+    plan = InstallPlan('0.2.0', tmp_path, tmp_path, tmp_path / EXECUTABLE_NAME)
+    monkeypatch.setattr(updates, 'install_directory', lambda: tmp_path)
+    monkeypatch.setattr(updates, 'launch_apply_script', lambda script: None)
+    apply_update(plan, 4321)
+    assert '更新安装脚本已启动：版本 0.2.0' in update_logs.text
+
+
+def test_apply_update_failure_logs_error_type_only(update_logs, monkeypatch, tmp_path):
+    plan = InstallPlan('0.2.0', tmp_path, tmp_path, tmp_path / EXECUTABLE_NAME)
+    monkeypatch.setattr(updates, 'install_directory', lambda: tmp_path)
+    with pytest.raises(UpdateError):
+        apply_update(plan, 4321)
+    assert '更新安装脚本启动失败：版本 0.2.0' in update_logs.text
+    assert 'UpdateError' in update_logs.text
+
+
+def test_consume_update_result_logs_success_and_rollback(update_logs, tmp_path):
+    root = updates_root(tmp_path)
+    root.mkdir(parents=True)
+    (root / RESULT_FILE_NAME).write_text('applied 0.2.0', encoding='utf-8')
+    assert consume_update_result(tmp_path) == ('applied', '0.2.0')
+    assert '自动更新成功：已更新到 0.2.0' in update_logs.text
+
+    root.mkdir(parents=True, exist_ok=True)
+    (root / RESULT_FILE_NAME).write_text('failed 0.2.0', encoding='utf-8')
+    assert consume_update_result(tmp_path) == ('failed', '0.2.0')
+    assert '自动更新失败并已回滚：版本 0.2.0' in update_logs.text

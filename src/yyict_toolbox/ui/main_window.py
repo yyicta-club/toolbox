@@ -1,3 +1,4 @@
+import logging
 import os
 from collections.abc import Sequence
 
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from yyict_toolbox import __version__
+from yyict_toolbox.logging_system import SYSTEM_LOGGER_NAME, UPDATE_LOGGER_NAME
 from yyict_toolbox.plugins.specs import ToolDescriptor
 from yyict_toolbox.resources import image_path, logo_path
 from yyict_toolbox.ui.update_worker import UpdateCheckWorker, UpdateDownloadWorker
@@ -35,13 +37,11 @@ from yyict_toolbox.updates import (
     InstallPlan,
     UpdateCandidate,
     UpdateError,
-    install_directory,
+    apply_update,
     is_frozen_install,
     is_portable_install,
-    launch_apply_script,
     release_page_url,
     updates_root,
-    write_apply_script,
 )
 
 
@@ -54,6 +54,8 @@ class MainWindow(QMainWindow):
         self._tool_buttons: dict[str, QPushButton] = {}
         self._pages: dict[str, QWidget] = {}
         self._exit_requested = False
+        self._logger = logging.getLogger(SYSTEM_LOGGER_NAME)
+        self._update_logger = logging.getLogger(UPDATE_LOGGER_NAME)
         self._update_worker: UpdateCheckWorker | None = None
         self._download_worker: UpdateDownloadWorker | None = None
         self._progress_dialog: QProgressDialog | None = None
@@ -342,6 +344,7 @@ class MainWindow(QMainWindow):
             self._pages[tool_id] = page
         self._page_layout.addWidget(page)
         page.show()
+        self._logger.info("切换到工具：%s", tool.name)
 
     def _tray_activated(self, reason: QSystemTrayIcon.ActivationReason) -> None:
         if reason in (
@@ -369,6 +372,7 @@ class MainWindow(QMainWindow):
         if self._update_worker is not None or self._download_worker is not None:
             return
         if not is_frozen_install():
+            self._update_logger.info("更新检查跳过：源码模式不支持自动更新")
             self._show_text_tip("源码模式不执行自动更新，请使用打包版本", 3000)
             return
         self._update_button.setEnabled(False)
@@ -416,6 +420,9 @@ class MainWindow(QMainWindow):
         self._start_download(candidate)
 
     def _offer_manual_update(self, candidate: UpdateCandidate) -> None:
+        self._update_logger.info(
+            "便携版更新：仅提供手动下载，版本 %s", candidate.manifest.version
+        )
         dialog = QMessageBox(self)
         dialog.setWindowTitle("便携版更新")
         dialog.setIcon(QMessageBox.Icon.Information)
@@ -474,9 +481,8 @@ class MainWindow(QMainWindow):
             self._show_text_tip("已下载更新，稍后可再次检查更新安装", 4000)
             return
         try:
-            script = write_apply_script(install_directory(), plan, os.getpid())
-            launch_apply_script(script)
-        except (OSError, UpdateError) as error:
+            apply_update(plan, os.getpid())
+        except UpdateError as error:
             QMessageBox.critical(self, "无法安装更新", str(error))
             return
         self._exit_application()

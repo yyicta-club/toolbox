@@ -1,5 +1,7 @@
 import logging
 import os
+from datetime import datetime
+from pathlib import Path
 from queue import Queue
 
 os.environ.setdefault('QT_QPA_PLATFORM', 'offscreen')
@@ -10,6 +12,13 @@ from PySide6.QtGui import QDesktopServices
 from PySide6.QtWidgets import QApplication, QLabel, QPushButton, QSystemTrayIcon
 
 from yyict_toolbox import __version__
+from yyict_toolbox.logging_system import (
+    SYSTEM_LOGGER_NAME,
+    LogEvent,
+    configure_logging,
+    event_hub,
+    plugin_logger_name,
+)
 from yyict_toolbox.plugins.builtin.campus_settings import (
     CampusSettings,
     CampusSettingsStore,
@@ -19,6 +28,7 @@ from yyict_toolbox.plugins.manager import create_plugin_manager
 from yyict_toolbox.ui.campus_network_page import CampusNetworkPage
 from yyict_toolbox.ui.main_window import MainWindow
 from yyict_toolbox.ui.quick_links_page import QuickLinksPage
+from yyict_toolbox.ui.system_logs_page import SystemLogsPage
 
 
 class FakeCredentialBackend:
@@ -51,7 +61,8 @@ def store(tmp_path):
 @pytest.fixture
 def window(app, store, monkeypatch):
     monkeypatch.setattr(QSystemTrayIcon, 'isSystemTrayAvailable', lambda: False)
-    manager = create_plugin_manager(store, Queue(), logging.getLogger('test-ui'))
+    event_hub().clear()
+    manager = create_plugin_manager(store, Queue(), events=event_hub())
     window = MainWindow(manager.get_tools())
     yield window
     window.shutdown()
@@ -61,6 +72,28 @@ def window(app, store, monkeypatch):
     window.hide()
     window.deleteLater()
     app.processEvents()
+    event_hub().clear()
+
+
+@pytest.fixture
+def log_page(window, tmp_path):
+    """打开运行日志页面，并把统一日志指向临时日志目录。"""
+    configure_logging(tmp_path)
+    window._tool_buttons['system-logs'].click()
+    page = window._pages['system-logs']
+    assert isinstance(page, SystemLogsPage)
+    return page
+
+
+def publish(message, level=logging.INFO, logger_name=SYSTEM_LOGGER_NAME):
+    event_hub().publish(
+        LogEvent(
+            timestamp=datetime.now(),
+            level=level,
+            logger_name=logger_name,
+            message=message,
+        )
+    )
 
 
 def test_main_window_displays_campus_network_configuration(window):
@@ -118,12 +151,23 @@ def test_log_level_filter(window, level, expected):
     page = window._pages['campus-network-login']
     for severity, message in [(logging.DEBUG, '详细'), (logging.INFO, '正常'),
                               (logging.WARNING, '警告'), (logging.ERROR, '错误')]:
-        page._log_queue.put(logging.LogRecord('test', severity, '', 0, message, (), None))
+        publish(message, severity)
     page._level_input.setCurrentIndex(page._level_input.findData(level))
     page._drain_log_queue()
     content = page._log_view.toPlainText()
     for message in ['详细', '正常', '警告', '错误']:
         assert (message in content) == (message in expected)
+
+
+def test_campus_page_falls_back_to_record_queue(app, store):
+    queue: Queue[logging.LogRecord] = Queue()
+    page = CampusNetworkPage(store, queue, logging.getLogger('legacy-test'))
+    try:
+        queue.put(logging.LogRecord('legacy', logging.ERROR, '', 0, '旧队列事件', (), None))
+        page._drain_log_queue()
+        assert '旧队列事件' in page._log_view.toPlainText()
+    finally:
+        page.shutdown()
 
 
 def test_settings_roundtrip_without_plaintext_password(store, tmp_path):
@@ -295,3 +339,82 @@ def test_failed_update_result_warns(window):
     QTimer.singleShot(50, lambda: _close_modal_dialog(titles))
     window.report_update_result(('failed', '0.2.0'))
     assert titles == ['更新未完成']
+
+
+def test_sidebar_contains_log_tool(window):
+    assert 'system-logs' in window._tool_buttons
+    assert window._tool_buttons['system-logs'].text() == '运行日志'
+
+
+def test_log_page_source_and_level_filters(log_page):
+    publish('系统信息事件')
+    publish('插件警告事件', logging.WARNING, plugin_logger_name('quick-links'))
+    publish('插件错误事件', logging.ERROR, plugin_logger_name('quick-links'))
+    log_page.drain_events()
+    content = log_page._view.toPlainText()
+    assert '系统信息事件' in content
+    assert '插件警告事件' in content
+    assert '插件错误事件' in content
+    assert '[快捷链接面板]' in content
+
+    log_page._source_input.setCurrentIndex(
+        log_page._source_input.findData('quick-links')
+    )
+    content = log_page._view.toPlainText()
+    assert '系统信息事件' not in content
+    assert '插件错误事件' in content
+
+    log_page._source_input.setCurrentIndex(0)
+    log_page._level_input.setCurrentIndex(log_page._level_input.findData(logging.WARNING))
+    content = log_page._view.toPlainText()
+    assert '系统信息事件' not in content
+    assert '插件警告事件' in content
+    assert '插件错误事件' in content
+
+
+def test_log_page_shows_unknown_plugin_source_as_stable_id(log_page):
+    publish('未知插件事件', logging.INFO, plugin_logger_name('not-installed-tool'))
+    log_page.drain_events()
+    assert '[not-installed-tool]' in log_page._view.toPlainText()
+
+
+def test_log_page_refresh_reads_persisted_history(log_page):
+    logging.getLogger(SYSTEM_LOGGER_NAME).info('写入文件的事件')
+    log_page._refresh_button.click()
+    content = log_page._view.toPlainText()
+    assert '写入文件的事件' in content
+
+
+def test_log_page_clear_only_clears_display(log_page, tmp_path):
+    logging.getLogger(SYSTEM_LOGGER_NAME).info('清空前的事件')
+    log_page.drain_events()
+    assert '清空前的事件' in log_page._view.toPlainText()
+    log_page._clear_button.click()
+    assert log_page._view.toPlainText() == ''
+    log_file = tmp_path / 'log/toolbox.log'
+    assert '清空前的事件' in log_file.read_text(encoding='utf-8')
+
+
+def test_log_page_open_log_file_action(log_page, tmp_path, monkeypatch):
+    opened: list[QUrl] = []
+    monkeypatch.setattr(QDesktopServices, 'openUrl', lambda url: bool(opened.append(url)))
+    log_page._open_button.click()
+    assert opened
+    assert Path(opened[0].toLocalFile()) == tmp_path / 'log/toolbox.log'
+    assert (tmp_path / 'log/toolbox.log').exists()
+
+
+def test_campus_page_receives_same_log_stream(window, log_page):
+    campus_page = window._pages['campus-network-login']
+    publish('统一日志事件')
+    campus_page._drain_log_queue()
+    log_page.drain_events()
+    assert '统一日志事件' in campus_page._log_view.toPlainText()
+    assert '统一日志事件' in log_page._view.toPlainText()
+
+
+def test_log_page_unsubscribes_on_shutdown(log_page):
+    assert log_page.shutdown() is True
+    publish('关闭后的事件')
+    log_page.drain_events()
+    assert '关闭后的事件' not in log_page._view.toPlainText()
