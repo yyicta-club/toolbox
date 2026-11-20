@@ -1,7 +1,7 @@
 from collections.abc import Sequence
 
 from PySide6.QtCore import QSize, Qt, QTimer, Signal
-from PySide6.QtGui import QAction, QCloseEvent, QIcon, QPixmap
+from PySide6.QtGui import QAction, QCloseEvent, QIcon, QPixmap, QResizeEvent
 from PySide6.QtWidgets import (
     QDialog,
     QFrame,
@@ -33,6 +33,10 @@ class MainWindow(QMainWindow):
         self._shutdown_timer = QTimer(self)
         self._shutdown_timer.setInterval(100)
         self._shutdown_timer.timeout.connect(self._complete_exit)
+        self._tip_label: QLabel | None = None
+        self._tip_timer = QTimer(self)
+        self._tip_timer.setSingleShot(True)
+        self._tip_timer.timeout.connect(self._hide_text_tip)
         self.setWindowTitle("校园工具箱")
         self.setWindowIcon(QIcon(str(logo_path())))
         self.setMinimumSize(780, 620)
@@ -134,6 +138,13 @@ class MainWindow(QMainWindow):
             self._tool_buttons[tool.id] = button
 
         layout.addStretch(1)
+        background_association = QPushButton("信息通信技术协会")
+        background_association.setStyleSheet("QPushButton { border: none; border-radius: 8px; }")
+        background_association.clicked.connect(
+            lambda: self._show_text_tip("欢迎扫描下方二维码进群", 3000)
+        )
+        layout.addWidget(background_association)
+
         self._image_pixmap = QPixmap(str(image_path("xiehuiqq.png")))
         join_button = QPushButton()
         if not self._image_pixmap.isNull():
@@ -194,6 +205,50 @@ class MainWindow(QMainWindow):
         self._tray_icon.activated.connect(self._tray_activated)
         if self.tray_available:
             self._tray_icon.show()
+
+    def _show_text_tip(self, text: str, duration_ms: int = 2000) -> QLabel:
+        """在主窗口底部弹出文本提示并返回提示标签。
+
+        duration_ms 为提示存活时间（毫秒），<=0 表示常驻直到下次调用或窗口关闭；
+        重复调用复用同一标签并重置生命周期。
+        """
+        if self._tip_label is None:
+            tip = QLabel(self)
+            tip.setAlignment(Qt.AlignmentFlag.AlignCenter)
+            tip.setWordWrap(True)
+            tip.setMaximumWidth(420)
+            tip.setStyleSheet(
+                "QLabel { background: #17212b; color: #ffffff; border-radius: 6px;"
+                " padding: 8px 14px; font-size: 13px; }"
+            )
+            self._tip_label = tip
+        tip = self._tip_label
+        tip.setText(text)
+        tip.adjustSize()
+        self._place_text_tip()
+        tip.show()
+        tip.raise_()
+        self._tip_timer.stop()
+        if duration_ms > 0:
+            self._tip_timer.start(duration_ms)
+        return tip
+
+    def _hide_text_tip(self) -> None:
+        if self._tip_label is not None:
+            self._tip_label.hide()
+
+    def _place_text_tip(self) -> None:
+        tip = self._tip_label
+        if tip is None:
+            return
+        tip.move(
+            (self.width() - tip.width()) // 2,
+            self.height() - tip.height() - 24,
+        )
+
+    def resizeEvent(self, event: QResizeEvent) -> None:
+        super().resizeEvent(event)
+        self._place_text_tip()
 
     def _show_enlarged_image(self) -> None:
         if self._image_pixmap.isNull():

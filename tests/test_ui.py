@@ -181,3 +181,24 @@ def test_main_window_shows_logo_in_window_tray_and_sidebar(window):
     pixmap = logo_label.pixmap()
     assert pixmap is not None and not pixmap.isNull()
     assert not window._tray_icon.icon().isNull()
+
+
+def test_text_tip_lifecycle_is_configurable(window, app):
+    import time
+
+    window.show()
+    tip = window._show_text_tip('提示内容', 50)
+    assert tip.text() == '提示内容'
+    assert tip.isVisible()
+    assert window._tip_timer.isActive()
+    assert window._tip_timer.interval() == 50
+    deadline = time.monotonic() + 3
+    while tip.isVisible() and time.monotonic() < deadline:
+        app.processEvents()
+        time.sleep(0.01)
+    assert not tip.isVisible()
+
+    persistent = window._show_text_tip('常驻提示', 0)
+    assert persistent.isVisible()
+    assert not window._tip_timer.isActive()
+    assert persistent is tip
