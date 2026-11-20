@@ -137,8 +137,6 @@ Qt 依赖固定为已验证打包启动的 `PySide6_Essentials==6.9.3`。如果�
 
 打包版本的主界面侧栏显示当前版本号，点击即可检查更新：从发布源读取清单、下载整包、校验 SHA-256，确认后退出程序，由后台脚本替换程序目录并自动重启；替换失败会回滚到原版本，结果写入更新目录并在下次启动时提示。源码运行只提示不支持自动更新，不下载安装包。
 
-模块划分、时序和失败回滚策略见 [docs/UPDATE_ARCHITECTURE.md](docs/UPDATE_ARCHITECTURE.md)。
-
 更新检查依次尝试 `src/yyict_toolbox/updates.py` 中的发布源：默认是自建 Gitea 仓库的 `releases/latest` API；创建 GitHub 备用仓库后，把 `GITHUB_REPOSITORY` 填成 `"owner/repo"` 即自动启用兜底。应用目录必须可写（与日志要求一致），更新不需要管理员权限。
 
 发布新版本：
