@@ -20,11 +20,58 @@
 
 ## 开发环境
 
+### 系统要求
+
+- **操作系统**：Windows 10/11 x64（主要目标平台）
+- **Python**：3.12 或更高版本
+- **包管理**：pip 或 [uv](https://github.com/astral-sh/uv)（推荐）
+
+### 依赖安装
+
+**方式一：使用 pip（标准）**
+
 ```powershell
 py -3.12 -m venv .venv
 .\.venv\Scripts\Activate.ps1
 python -m pip install -e ".[dev]"
 ```
+
+**方式二：使用 uv（推荐，更快）**
+
+```powershell
+uv venv --python 3.12
+.\.venv\Scripts\Activate.ps1
+uv pip install -e ".[dev]"
+```
+
+**核心依赖说明**：
+
+| 依赖 | 版本 | 用途 |
+|------|------|------|
+| `keyring` | >=25,<26 | Windows 凭据库存储密码 |
+| `pluggy` | >=1.5,<2 | 插件 Hook 框架 |
+| `PySide6_Essentials` | ==6.9.3 | Qt UI 框架（固定版本） |
+
+**开发依赖**（`[dev]`）：
+
+| 依赖 | 版本 | 用途 |
+|------|------|------|
+| `pytest` | >=8,<9 | 测试框架 |
+| `pyinstaller` | >=6.10,<7 | Windows 打包 |
+
+### IDE 配置
+
+**PyCharm**：
+1. 打开项目，选择 `Settings → Project → Python Interpreter`
+2. 添加解释器 → 选择 `.venv\Scripts\python.exe`
+3. 右键 `tests/` 目录 → `Run pytest` 验证配置
+
+**VSCode**：
+1. 安装 Python 扩展
+2. `Ctrl+Shift+P` → `Python: Select Interpreter` → 选择 `.venv`
+3. 测试面板自动识别 pytest
+
+### 运行调试
 
 启动桌面应用：
 
@@ -32,10 +79,25 @@ python -m pip install -e ".[dev]"
 python -m yyict_toolbox
 ```
 
-运行测试：
+### 测试规范
+
+运行全部测试：
 
 ```powershell
 python -m pytest
+```
+
+运行指定测试：
+
+```powershell
+python -m pytest tests/test_plugins.py -v
+```
+
+**UI 测试**：涉及 UI 的自动化测试需设置 offscreen 模式：
+
+```powershell
+$env:QT_QPA_PLATFORM = "offscreen"
+python -m pytest tests/test_ui.py
 ```
 
 ## Windows 打包
@@ -53,3 +115,5 @@ Qt 依赖固定为已验证打包启动的 `PySide6_Essentials==6.9.3`。如果�
 ## 插件结构
 
 插件通过 `plugins/specs.py` 定义的 pluggy Hook 提供工具元数据和页面工厂。只注册随应用分发的内置插件，不扫描外部插件目录。
+
+详细的插件开发指南请参考 [PLUGIN_DEVELOPMENT.md](PLUGIN_DEVELOPMENT.md)，其中包含完整的开发步骤和示例代码。
