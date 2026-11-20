@@ -11,6 +11,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import os
 import re
 import shutil
@@ -24,6 +25,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from yyict_toolbox import __version__
+from yyict_toolbox.logging_system import UPDATE_LOGGER_NAME
 
 GITEA_SERVER = "http://103.236.53.254:3560"
 GITEA_REPOSITORY = "yyict/yyict-toolbox"
@@ -482,6 +484,25 @@ def launch_apply_script(script: Path) -> None:
     )
 
 
+def apply_update(plan: InstallPlan, app_pid: int) -> Path:
+    """生成并启动替换脚本；失败抛 ``UpdateError`` 并写入更新日志。
+
+    日志只记录版本和错误类型，不记录脚本路径或下载地址。
+    """
+    logger = logging.getLogger(UPDATE_LOGGER_NAME)
+    try:
+        script = write_apply_script(install_directory(), plan, app_pid)
+        launch_apply_script(script)
+    except UpdateError as error:
+        logger.error("更新安装脚本启动失败：版本 %s（%s）", plan.version, type(error).__name__)
+        raise
+    except OSError as error:
+        logger.error("更新安装脚本启动失败：版本 %s（%s）", plan.version, type(error).__name__)
+        raise UpdateError(f"无法启动更新安装脚本：{error}") from error
+    logger.info("更新安装脚本已启动：版本 %s", plan.version)
+    return script
+
+
 def consume_update_result(root: Path | None = None) -> tuple[str, str] | None:
     """读取并删除上次替换脚本留下的结果，返回 ``(状态, 版本)``。"""
     path = updates_root(root) / RESULT_FILE_NAME
@@ -501,6 +522,11 @@ def consume_update_result(root: Path | None = None) -> tuple[str, str] | None:
         parse_version(parts[1])
     except ValueError:
         return None
+    logger = logging.getLogger(UPDATE_LOGGER_NAME)
+    if parts[0] == "applied":
+        logger.info("自动更新成功：已更新到 %s", parts[1])
+    else:
+        logger.warning("自动更新失败并已回滚：版本 %s", parts[1])
     # 替换已完成或已回滚，安装包与解压目录都不再需要，避免长期占用磁盘。
     shutil.rmtree(path.parent / parts[1], ignore_errors=True)
     return parts[0], parts[1]
